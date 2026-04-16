@@ -65,9 +65,22 @@ def ask_openai(number, text):
         historico[number] = []
     historico[number].append({"role": "user", "content": text})
     if len(historico[number]) == 1:
-        instrucao = SYSTEM_PROMPT + " Esta e a PRIMEIRA mensagem. Apresente-se como Isabela."
+        instrucao = SYSTEM_PROMPT + ' Esta e a PRIMEIRA mensagem. Voce DEVE responder EXATAMENTE com: "Ola! Sou a Isabela, atendente virtual da Farmacia Saude e Vida. Como posso te ajudar hoje? 😊" e nada mais.'
     else:
         instrucao = SYSTEM_PROMPT + " Esta NAO e a primeira mensagem. NAO se apresente. Responda diretamente."
     messages = [{"role": "system", "content": instrucao}] + historico[number][-10:]
     h = {"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"}
-    b = {"model": "gpt-4o-mini", "messages":
+    b = {"model": "gpt-4o-mini", "messages": messages}
+    r = requests.post("https://api.openai.com/v1/chat/completions", json=b, headers=h)
+    reply = r.json()["choices"][0]["message"]["content"]
+    historico[number].append({"role": "assistant", "content": reply})
+    return reply
+
+def send(number, text):
+    h = {"token": TOKEN}
+    b = {"number": number, "text": text}
+    r = requests.post(f"{BASE}/send/text", json=b, headers=h)
+    print("SEND:", r.status_code, r.text)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
