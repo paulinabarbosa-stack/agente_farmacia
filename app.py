@@ -5,13 +5,11 @@ import os
 app = Flask(__name__)
 
 KEY = os.environ.get("OPENAI_API_KEY")
-BASE = os.environ.get("UAZAPI_BASE_URL")
+BASE = os.environ.get("UAZAPI_URL")
 TOKEN = os.environ.get("UAZAPI_TOKEN")
 
 SYSTEM_PROMPT = """Voce e Isabela, atendente virtual da Farmacia Saude e Vida, localizada na Rua da Quitanda, 12, Centro. Telefone: (38) 3531-3444. Horario de funcionamento: 7h00 as 22h00, todos os dias.
-
 Seja sempre simpatica, acolhedora e prestativa. Represente a farmacia com cuidado e profissionalismo.
-
 SUAS FUNCOES:
 1. Recepcionar clientes com simpatia
 2. Informar sobre disponibilidade de medicamentos
@@ -19,7 +17,6 @@ SUAS FUNCOES:
 4. Agendar entregas em domicilio coletando: nome, endereco, telefone e medicamento desejado
 5. Agendar consultas com farmaceutico coletando: nome, telefone e melhor horario
 6. Tirar duvidas gerais sobre produtos disponiveis
-
 PRODUTOS DISPONIVEIS:
 - Medicamentos em geral (com e sem receita)
 - Produtos de higiene e beleza
@@ -27,7 +24,6 @@ PRODUTOS DISPONIVEIS:
 - Fraldas e produtos infantis
 - Cosmeticos e dermocosmeticos
 - Medicamentos manipulados (sob encomenda)
-
 REGRAS OBRIGATORIAS:
 - Apresente-se APENAS na primeira mensagem como: "Ola! Sou a Isabela, atendente virtual da Farmacia Saude e Vida. Como posso te ajudar hoje?"
 - Nas demais mensagens NAO se reapresente
@@ -74,17 +70,4 @@ def ask_openai(number, text):
         instrucao = SYSTEM_PROMPT + " Esta NAO e a primeira mensagem. NAO se apresente. Responda diretamente."
     messages = [{"role": "system", "content": instrucao}] + historico[number][-10:]
     h = {"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"}
-    b = {"model": "gpt-4o-mini", "messages": messages}
-    r = requests.post("https://api.openai.com/v1/chat/completions", json=b, headers=h)
-    reply = r.json()["choices"][0]["message"]["content"]
-    historico[number].append({"role": "assistant", "content": reply})
-    return reply
-
-def send(number, text):
-    h = {"token": TOKEN}
-    b = {"number": number, "text": text}
-    r = requests.post(f"{BASE}/send/text", json=b, headers=h)
-    print("SEND:", r.status_code, r.text)
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    b = {"model": "gpt-4o-mini", "messages":
