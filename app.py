@@ -93,10 +93,10 @@ Quando o cliente quiser comprar, siga SEMPRE esta ordem:
 6. Colete: CPF
 7. Pergunte: "Qual sera a forma de pagamento? Aceitamos Pix, cartao de credito, cartao de debito ou dinheiro."
 8. Confirme o resumo do pedido com todos os dados e valor total
-9. Finalize com: "Seu pedido foi registrado! Em breve nossa equipe entrara em contato para confirmar a entrega. Obrigada! 😊"
+9. Finalize com: "Seu pedido foi registrado! Em breve nossa equipe entrara em contato para confirmar a entrega. Obrigada!"
 
 REGRAS OBRIGATORIAS:
-- Apresente-se APENAS na primeira mensagem como: "Ola! Sou a Isabela, atendente virtual da Farmacia Saude e Vida. Como posso te ajudar hoje? 😊"
+- Apresente-se APENAS na primeira mensagem como: "Ola! Sou a Isabela, atendente virtual da Farmacia Saude e Vida. Como posso te ajudar hoje?"
 - Nas demais mensagens NAO se reapresente
 - Use os precos da tabela acima ao ser perguntada
 - NUNCA oriente sobre dosagem ou substituicao de medicamentos - indique o farmaceutico
@@ -106,6 +106,7 @@ REGRAS OBRIGATORIAS:
 
 historico = {}
 mensagens_processadas = set()
+
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -125,4 +126,100 @@ def webhook():
             if len(mensagens_processadas) > 10000:
                 mensagens_processadas.clear()
 
-        number = msg.get("chatid", "").replace("@s.whatsap
+        number = msg.get("chatid", "").replace("@s.whatsapp.net", "")
+        if not number:
+            number = chat.get("wa_chatid", "").replace("@s.whatsapp.net", "")
+
+        text = msg.get("content") or msg.get("text") or chat.get("wa_lastMessageTextVote")
+
+        if not number or not text:
+            return "ok", 200
+
+        if not isinstance(text, str):
+            print("AVISO: mensagem ignorada pois content nao e string:", type(text), text)
+            return "ok", 200
+
+        text = text.strip()
+        if not text:
+            return "ok", 200
+
+        reply = ask_openai(number, text)
+        if reply:
+            send(number, reply)
+
+    except Exception as e:
+        print("ERROR:", e)
+
+    return "ok", 200
+
+
+def ask_openai(number, text):
+    if number not in historico:
+        historico[number] = []
+
+    historico[number].append({"role": "user", "content": text})
+
+    historico[number] = [
+        m for m in historico[number]
+        if isinstance(m.get("content"), str) and m["content"].strip()
+    ]
+
+    if len(historico[number]) == 1:
+        instrucao = (
+            SYSTEM_PROMPT
+            + " Esta e a PRIMEIRA mensagem. Voce DEVE responder EXATAMENTE com:"
+            + " Ola! Sou a Isabela, atendente virtual da Farmacia Saude e Vida."
+            + " Como posso te ajudar hoje? e nada mais."
+        )
+    else:
+        instrucao = SYSTEM_PROMPT + " Esta NAO e a primeira mensagem. NAO se apresente. Responda diretamente."
+
+    messages = [{"role": "system", "content": instrucao}] + historico[number][-10:]
+
+    h = {"Authorization": "Bearer " + KEY, "Content-Type": "application/json"}
+    b = {"model": "gpt-4o-mini", "messages": messages}
+
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            json=b,
+            headers=h,
+            timeout=30
+        )
+        r.raise_for_status()
+
+        resultado = r.json()
+
+        if not resultado.get("choices"):
+            print("ERRO: resposta sem choices:", resultado)
+            return "Desculpe, tive um problema interno. Pode repetir sua mensagem?"
+
+        reply = resultado["choices"][0]["message"]["content"]
+        historico[number].append({"role": "assistant", "content": reply})
+        return reply
+
+    except requests.exceptions.Timeout:
+        print("ERRO: timeout na chamada da OpenAI")
+        return "Desculpe, demorei para responder. Pode repetir?"
+
+    except requests.exceptions.HTTPError as e:
+        print("ERRO HTTP OpenAI: " + str(e) + " | Resposta: " + r.text)
+        return "Estou com uma instabilidade agora. Tente novamente em instantes!"
+
+    except Exception as e:
+        print("ERRO inesperado OpenAI: " + str(e))
+        return "Ocorreu um erro inesperado. Por favor, tente novamente."
+
+
+def send(number, text):
+    h = {"token": TOKEN}
+    b = {"number": number, "text": text}
+    try:
+        r = requests.post(BASE + "/send/text", json=b, headers=h, timeout=15)
+        print("SEND:", r.status_code, r.text)
+    except Exception as e:
+        print("ERRO ao enviar mensagem: " + str(e))
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
