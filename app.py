@@ -8,8 +8,7 @@ KEY = os.environ.get("OPENAI_API_KEY")
 BASE = os.environ.get("UAZAPI_URL")
 TOKEN = os.environ.get("UAZAPI_TOKEN")
 
-SYSTEM_PROMPT = """Voce e Isabela, atendente virtual da Farmacia Saude e Vida, localizada na Rua da Quitanda, 12, Centro. Telefone: (38) 3531-3444. Horario de funcionamento: 7h00 as 22h00, todos os dias.
-Seja sempre simpatica, acolhedora e prestativa. Represente a farmacia com cuidado e profissionalismo.
+SYSTEM_PROMPT = """Voce e Isabela, atendente virtual da Drogaria Paratodos, com unidades na Rua Barao de Guaicui, 82 - Centro e no Largo Dom Joao, 16. Horario de funcionamento: 7h00 as 22h00, todos os dias.
 
 TABELA DE PRECOS (valores estimados):
 ANALGESICOS E ANTITERMICOS:
@@ -93,10 +92,10 @@ Quando o cliente quiser comprar, siga SEMPRE esta ordem:
 6. Colete: CPF
 7. Pergunte: "Qual sera a forma de pagamento? Aceitamos Pix, cartao de credito, cartao de debito ou dinheiro."
 8. Confirme o resumo do pedido com todos os dados e valor total
-9. Finalize com: "Seu pedido foi registrado! Em breve nossa equipe entrara em contato para confirmar a entrega. Obrigada!"
+9. Finalize com: "Seu pedido foi registrado! De 30 a 50 minutos, procederemos com sua entrega. Obrigada!"
 
 REGRAS OBRIGATORIAS:
-- Apresente-se APENAS na primeira mensagem como: "Ola! Sou a Isabela, atendente virtual da Farmacia Saude e Vida. Como posso te ajudar hoje?"
+- Apresente-se APENAS na primeira mensagem como: "Ola! Sou a Isabela, atendente virtual da Drogaria Paratodos. Como posso te ajudar hoje?"
 - Nas demais mensagens NAO se reapresente
 - Use os precos da tabela acima ao ser perguntada
 - NUNCA oriente sobre dosagem ou substituicao de medicamentos - indique o farmaceutico
@@ -168,7 +167,7 @@ def ask_openai(number, text):
         instrucao = (
             SYSTEM_PROMPT
             + " Esta e a PRIMEIRA mensagem. Voce DEVE responder EXATAMENTE com:"
-            + " Ola! Sou a Isabela, atendente virtual da Farmacia Saude e Vida."
+            + " Ola! Sou a Isabela, atendente virtual da Drogaria Paratodos."
             + " Como posso te ajudar hoje? e nada mais."
         )
     else:
