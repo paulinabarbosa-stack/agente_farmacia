@@ -1,6 +1,8 @@
 from flask import Flask, request
 import requests
 import os
+from datetime import datetime
+import pytz
 
 app = Flask(__name__)
 
@@ -109,7 +111,6 @@ Que tal deixar uma avaliacao para nos ajudar a melhorar?
 Obrigada pela preferencia! Volte sempre. 💙"
 
 REGRAS OBRIGATORIAS:
-- Apresente-se APENAS na primeira mensagem como: "Ola! Sou a Isabela, atendente virtual da Drogaria Paratodos. Como posso te ajudar hoje?"
 - Nas demais mensagens NAO se reapresente
 - Use os precos da tabela acima ao ser perguntada
 - NUNCA oriente sobre dosagem ou substituicao de medicamentos - indique o farmaceutico
@@ -119,6 +120,17 @@ REGRAS OBRIGATORIAS:
 
 historico = {}
 mensagens_processadas = set()
+
+
+def get_saudacao():
+    tz = pytz.timezone("America/Sao_Paulo")
+    hora = datetime.now(tz).hour
+    if 5 <= hora < 12:
+        return "Bom dia"
+    elif 12 <= hora < 18:
+        return "Boa tarde"
+    else:
+        return "Boa noite"
 
 
 @app.route("/webhook", methods=["POST"])
@@ -178,10 +190,11 @@ def ask_openai(number, text):
     ]
 
     if len(historico[number]) == 1:
+        saudacao = get_saudacao()
         instrucao = (
             SYSTEM_PROMPT
             + " Esta e a PRIMEIRA mensagem. Voce DEVE responder EXATAMENTE com:"
-            + " Ola! Sou a Isabela, atendente virtual da Drogaria Paratodos."
+            + f" {saudacao}! Sou a Isabela, atendente virtual da Drogaria Paratodos."
             + " Como posso te ajudar hoje? e nada mais."
         )
     else:
