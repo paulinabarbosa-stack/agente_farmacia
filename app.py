@@ -4,7 +4,8 @@ import os
 import base64
 from datetime import datetime
 import pytz
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 app = Flask(__name__)
 
@@ -12,7 +13,7 @@ GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 BASE = os.environ.get("UAZAPI_URL")
 TOKEN = os.environ.get("UAZAPI_TOKEN")
 
-genai.configure(api_key=GEMINI_KEY)
+client = genai.Client(api_key=GEMINI_KEY)
 
 SYSTEM_PROMPT = """Voce e Isabela, atendente virtual da Farmacia Saude e Vida, localizada em Diamantina-MG. Horario de funcionamento: 7h00 as 22h00, todos os dias.
 Seja sempre simpatica, acolhedora e prestativa. Represente a farmacia com cuidado e profissionalismo.
@@ -138,7 +139,7 @@ def baixar_audio(url):
     try:
         r = requests.get(url, timeout=15)
         if r.status_code == 200:
-            return base64.b64encode(r.content).decode("utf-8")
+            return r.content
     except Exception as e:
         print("ERRO ao baixar audio:", e)
     return None
@@ -167,21 +168,20 @@ def webhook():
             number = chat.get("wa_chatid", "").replace("@s.whatsapp.net", "")
 
         msg_type = msg.get("type", "")
-        audio_data = None
+        audio_bytes = None
         text = None
 
-        # Áudio
         if msg_type in ("audio", "ptt"):
             audio_url = msg.get("content") or msg.get("url") or msg.get("mediaUrl")
             if audio_url:
-                audio_data = baixar_audio(audio_url)
+                audio_bytes = baixar_audio(audio_url)
                 text = "[audio]"
             else:
                 return "ok", 200
         else:
             text = msg.get("content") or msg.get("text") or chat.get("wa_lastMessageTextVote")
 
-        if not number or (not text and not audio_data):
+        if not number or (not text and not audio_bytes):
             return "ok", 200
 
         if text and not isinstance(text, str):
@@ -189,10 +189,8 @@ def webhook():
 
         if text:
             text = text.strip()
-        if not text and not audio_data:
-            return "ok", 200
 
-        reply = ask_gemini(number, text, audio_data)
+        reply = ask_gemini(number, text, audio_bytes)
         if reply:
             send(number, reply)
 
@@ -202,43 +200,41 @@ def webhook():
     return "ok", 200
 
 
-def ask_gemini(number, text, audio_data=None):
+def ask_gemini(number, text, audio_bytes=None):
     if number not in historico:
         historico[number] = []
 
     is_primeira = len(historico[number]) == 0
     saudacao = get_saudacao()
 
-    model = genai.GenerativeModel(
-        model_name="gemini-2.0-flash",
-        system_instruction=SYSTEM_PROMPT
-    )
-
-    # Montar histórico de chat para o Gemini
+    # Montar histórico no formato do google-genai
     gemini_history = []
     for m in historico[number][-10:]:
         role = "user" if m["role"] == "user" else "model"
-        gemini_history.append({"role": role, "parts": [m["content"]]})
-
-    chat_session = model.start_chat(history=gemini_history)
+        gemini_history.append(types.Content(role=role, parts=[types.Part(text=m["content"])]))
 
     # Montar mensagem atual
-    if audio_data:
-        parts = [
-            {"mime_type": "audio/ogg", "data": audio_data},
-            "Responda ao audio acima como Isabela, atendente da Farmacia Saude e Vida."
-        ]
+    parts = []
+    if audio_bytes:
+        parts.append(types.Part(inline_data=types.Blob(mime_type="audio/ogg", data=audio_bytes)))
+        instrucao = "Transcreva e responda ao audio como Isabela."
         if is_primeira:
-            parts.append(f"Esta e a primeira mensagem. Comece com '{saudacao}! Sou a Isabela, atendente virtual da Farmacia Saude e Vida. Como posso te ajudar hoje?' antes de responder ao audio.")
-        user_message = parts
+            instrucao += f" Comece com '{saudacao}! Sou a Isabela, atendente virtual da Farmacia Saude e Vida. Como posso te ajudar hoje?'"
+        parts.append(types.Part(text=instrucao))
     else:
+        msg_text = text
         if is_primeira:
-            user_message = f"{text}\n\n[INSTRUCAO: Esta e a PRIMEIRA mensagem. Responda EXATAMENTE com: '{saudacao}! Sou a Isabela, atendente virtual da Farmacia Saude e Vida. Como posso te ajudar hoje?' e nada mais.]"
-        else:
-            user_message = text
+            msg_text += f"\n\n[INSTRUCAO: Esta e a PRIMEIRA mensagem. Responda EXATAMENTE com: '{saudacao}! Sou a Isabela, atendente virtual da Farmacia Saude e Vida. Como posso te ajudar hoje?' e nada mais.]"
+        parts.append(types.Part(text=msg_text))
+
+    gemini_history.append(types.Content(role="user", parts=parts))
 
     try:
-        response = chat_session.send_message(user_message)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=gemini_history,
+            config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
+        )
         reply = response.text
 
         historico[number].append({"role": "user", "content": text or "[audio]"})
