@@ -108,7 +108,7 @@ Sempre que o atendimento for encerrado (pedido finalizado, duvida resolvida ou c
 "Seu pedido foi registrado! Em breve nossa equipe entrara em contato para confirmar a entrega. Foi um prazer te atender! 😊
 
 Que tal deixar uma avaliacao para nos ajudar a melhorar?
-⭐ Farmacia Saude e Vida: https://search.google.com/local/writereview?placeid=PLACE_ID_AQUI
+⭐ Farmacia Saude e Vida: https://search.google.com/local/writereview?placeid=ChIJAQBsTgC5rgARK0oiw3CQOpg
 
 Obrigada pela preferencia! Volte sempre. 💙"
 
