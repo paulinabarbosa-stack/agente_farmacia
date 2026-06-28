@@ -1,20 +1,21 @@
 from flask import Flask, request
 import requests
 import os
+import base64
 from datetime import datetime
 import pytz
+import google.generativeai as genai
 
 app = Flask(__name__)
 
-KEY = os.environ.get("OPENAI_API_KEY")
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 BASE = os.environ.get("UAZAPI_URL")
 TOKEN = os.environ.get("UAZAPI_TOKEN")
 
-SYSTEM_PROMPT = """Voce e Isabela, atendente virtual da Drogaria Paratodos, com duas unidades em Diamantina-MG:
-- Unidade 1: Praca Barao de Guaicui, 82 - Centro. Telefone: (38) 3531-1360
-- Unidade 2: Largo Dom Joao, 16. Telefone: (38) 3531-2882
-Horario de funcionamento: 7h00 as 22h00, todos os dias.
-Seja sempre simpatica, acolhedora e prestativa. Represente a drogaria com cuidado e profissionalismo.
+genai.configure(api_key=GEMINI_KEY)
+
+SYSTEM_PROMPT = """Voce e Isabela, atendente virtual da Farmacia Saude e Vida, localizada em Diamantina-MG. Horario de funcionamento: 7h00 as 22h00, todos os dias.
+Seja sempre simpatica, acolhedora e prestativa. Represente a farmacia com cuidado e profissionalismo.
 
 TABELA DE PRECOS (valores estimados):
 ANALGESICOS E ANTITERMICOS:
@@ -87,6 +88,7 @@ SUAS FUNCOES:
 4. Ao confirmar um pedido, coletar OBRIGATORIAMENTE nesta ordem: nome completo, endereco completo, CPF e forma de pagamento
 5. Agendar entregas em domicilio
 6. Agendar consultas com farmaceutico coletando: nome, telefone e melhor horario
+7. Se o cliente enviar um audio, transcreva e responda normalmente como se fosse texto
 
 FLUXO DE PEDIDO OBRIGATORIO:
 Quando o cliente quiser comprar, siga SEMPRE esta ordem:
@@ -105,8 +107,7 @@ Sempre que o atendimento for encerrado (pedido finalizado, duvida resolvida ou c
 "Seu pedido foi registrado! Em breve nossa equipe entrara em contato para confirmar a entrega. Foi um prazer te atender! 😊
 
 Que tal deixar uma avaliacao para nos ajudar a melhorar?
-⭐ Unidade Praca Barao de Guaicui: https://search.google.com/local/writereview?placeid=ChIJ65frAgG5rgARPHx-yPrUAZ4
-⭐ Unidade Largo Dom Joao: https://search.google.com/local/writereview?placeid=ChIJY7shxFS4rgAR3r-teEAv1LE
+⭐ Farmacia Saude e Vida: https://search.google.com/local/writereview?placeid=PLACE_ID_AQUI
 
 Obrigada pela preferencia! Volte sempre. 💙"
 
@@ -133,6 +134,16 @@ def get_saudacao():
         return "Boa noite"
 
 
+def baixar_audio(url):
+    try:
+        r = requests.get(url, timeout=15)
+        if r.status_code == 200:
+            return base64.b64encode(r.content).decode("utf-8")
+    except Exception as e:
+        print("ERRO ao baixar audio:", e)
+    return None
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
@@ -155,20 +166,33 @@ def webhook():
         if not number:
             number = chat.get("wa_chatid", "").replace("@s.whatsapp.net", "")
 
-        text = msg.get("content") or msg.get("text") or chat.get("wa_lastMessageTextVote")
+        msg_type = msg.get("type", "")
+        audio_data = None
+        text = None
 
-        if not number or not text:
+        # Áudio
+        if msg_type in ("audio", "ptt"):
+            audio_url = msg.get("content") or msg.get("url") or msg.get("mediaUrl")
+            if audio_url:
+                audio_data = baixar_audio(audio_url)
+                text = "[audio]"
+            else:
+                return "ok", 200
+        else:
+            text = msg.get("content") or msg.get("text") or chat.get("wa_lastMessageTextVote")
+
+        if not number or (not text and not audio_data):
             return "ok", 200
 
-        if not isinstance(text, str):
-            print("AVISO: mensagem ignorada pois content nao e string:", type(text), text)
+        if text and not isinstance(text, str):
             return "ok", 200
 
-        text = text.strip()
-        if not text:
+        if text:
+            text = text.strip()
+        if not text and not audio_data:
             return "ok", 200
 
-        reply = ask_openai(number, text)
+        reply = ask_gemini(number, text, audio_data)
         if reply:
             send(number, reply)
 
@@ -178,63 +202,53 @@ def webhook():
     return "ok", 200
 
 
-def ask_openai(number, text):
+def ask_gemini(number, text, audio_data=None):
     if number not in historico:
         historico[number] = []
 
-    historico[number].append({"role": "user", "content": text})
+    is_primeira = len(historico[number]) == 0
+    saudacao = get_saudacao()
 
-    historico[number] = [
-        m for m in historico[number]
-        if isinstance(m.get("content"), str) and m["content"].strip()
-    ]
+    model = genai.GenerativeModel(
+        model_name="gemini-2.0-flash",
+        system_instruction=SYSTEM_PROMPT
+    )
 
-    if len(historico[number]) == 1:
-        saudacao = get_saudacao()
-        instrucao = (
-            SYSTEM_PROMPT
-            + " Esta e a PRIMEIRA mensagem. Voce DEVE responder EXATAMENTE com:"
-            + f" {saudacao}! Sou a Isabela, atendente virtual da Drogaria Paratodos."
-            + " Como posso te ajudar hoje? e nada mais."
-        )
+    # Montar histórico de chat para o Gemini
+    gemini_history = []
+    for m in historico[number][-10:]:
+        role = "user" if m["role"] == "user" else "model"
+        gemini_history.append({"role": role, "parts": [m["content"]]})
+
+    chat_session = model.start_chat(history=gemini_history)
+
+    # Montar mensagem atual
+    if audio_data:
+        parts = [
+            {"mime_type": "audio/ogg", "data": audio_data},
+            "Responda ao audio acima como Isabela, atendente da Farmacia Saude e Vida."
+        ]
+        if is_primeira:
+            parts.append(f"Esta e a primeira mensagem. Comece com '{saudacao}! Sou a Isabela, atendente virtual da Farmacia Saude e Vida. Como posso te ajudar hoje?' antes de responder ao audio.")
+        user_message = parts
     else:
-        instrucao = SYSTEM_PROMPT + " Esta NAO e a primeira mensagem. NAO se apresente. Responda diretamente."
-
-    messages = [{"role": "system", "content": instrucao}] + historico[number][-10:]
-
-    h = {"Authorization": "Bearer " + KEY, "Content-Type": "application/json"}
-    b = {"model": "gpt-4o-mini", "messages": messages}
+        if is_primeira:
+            user_message = f"{text}\n\n[INSTRUCAO: Esta e a PRIMEIRA mensagem. Responda EXATAMENTE com: '{saudacao}! Sou a Isabela, atendente virtual da Farmacia Saude e Vida. Como posso te ajudar hoje?' e nada mais.]"
+        else:
+            user_message = text
 
     try:
-        r = requests.post(
-            "https://api.openai.com/v1/chat/completions",
-            json=b,
-            headers=h,
-            timeout=30
-        )
-        r.raise_for_status()
+        response = chat_session.send_message(user_message)
+        reply = response.text
 
-        resultado = r.json()
-
-        if not resultado.get("choices"):
-            print("ERRO: resposta sem choices:", resultado)
-            return "Desculpe, tive um problema interno. Pode repetir sua mensagem?"
-
-        reply = resultado["choices"][0]["message"]["content"]
+        historico[number].append({"role": "user", "content": text or "[audio]"})
         historico[number].append({"role": "assistant", "content": reply})
+
         return reply
 
-    except requests.exceptions.Timeout:
-        print("ERRO: timeout na chamada da OpenAI")
-        return "Desculpe, demorei para responder. Pode repetir?"
-
-    except requests.exceptions.HTTPError as e:
-        print("ERRO HTTP OpenAI: " + str(e) + " | Resposta: " + r.text)
-        return "Estou com uma instabilidade agora. Tente novamente em instantes!"
-
     except Exception as e:
-        print("ERRO inesperado OpenAI: " + str(e))
-        return "Ocorreu um erro inesperado. Por favor, tente novamente."
+        print("ERRO Gemini:", e)
+        return "Desculpe, tive um problema interno. Pode repetir sua mensagem?"
 
 
 def send(number, text):
@@ -244,7 +258,7 @@ def send(number, text):
         r = requests.post(BASE + "/send/text", json=b, headers=h, timeout=15)
         print("SEND:", r.status_code, r.text)
     except Exception as e:
-        print("ERRO ao enviar mensagem: " + str(e))
+        print("ERRO ao enviar mensagem:", e)
 
 
 if __name__ == "__main__":
