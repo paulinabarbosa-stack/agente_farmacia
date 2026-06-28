@@ -1,19 +1,14 @@
 from flask import Flask, request
 import requests
 import os
-import base64
 from datetime import datetime
 import pytz
-from google import genai
-from google.genai import types
 
 app = Flask(__name__)
 
-GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
+KEY = os.environ.get("OPENAI_API_KEY")
 BASE = os.environ.get("UAZAPI_URL")
 TOKEN = os.environ.get("UAZAPI_TOKEN")
-
-client = genai.Client(api_key=GEMINI_KEY)
 
 SYSTEM_PROMPT = """Voce e Isabela, atendente virtual da Farmacia Saude e Vida, localizada em Diamantina-MG. Horario de funcionamento: 7h00 as 22h00, todos os dias.
 Seja sempre simpatica, acolhedora e prestativa. Represente a farmacia com cuidado e profissionalismo.
@@ -89,7 +84,6 @@ SUAS FUNCOES:
 4. Ao confirmar um pedido, coletar OBRIGATORIAMENTE nesta ordem: nome completo, endereco completo, CPF e forma de pagamento
 5. Agendar entregas em domicilio
 6. Agendar consultas com farmaceutico coletando: nome, telefone e melhor horario
-7. Se o cliente enviar um audio, transcreva e responda normalmente como se fosse texto
 
 FLUXO DE PEDIDO OBRIGATORIO:
 Quando o cliente quiser comprar, siga SEMPRE esta ordem:
@@ -113,6 +107,7 @@ Que tal deixar uma avaliacao para nos ajudar a melhorar?
 Obrigada pela preferencia! Volte sempre. 💙"
 
 REGRAS OBRIGATORIAS:
+- Apresente-se APENAS na primeira mensagem
 - Nas demais mensagens NAO se reapresente
 - Use os precos da tabela acima ao ser perguntada
 - NUNCA oriente sobre dosagem ou substituicao de medicamentos - indique o farmaceutico
@@ -133,16 +128,6 @@ def get_saudacao():
         return "Boa tarde"
     else:
         return "Boa noite"
-
-
-def baixar_audio(url):
-    try:
-        r = requests.get(url, timeout=15)
-        if r.status_code == 200:
-            return r.content
-    except Exception as e:
-        print("ERRO ao baixar audio:", e)
-    return None
 
 
 @app.route("/webhook", methods=["POST"])
@@ -167,30 +152,19 @@ def webhook():
         if not number:
             number = chat.get("wa_chatid", "").replace("@s.whatsapp.net", "")
 
-        msg_type = msg.get("type", "")
-        audio_bytes = None
-        text = None
+        text = msg.get("content") or msg.get("text") or chat.get("wa_lastMessageTextVote")
 
-        if msg_type in ("audio", "ptt"):
-            audio_url = msg.get("content") or msg.get("url") or msg.get("mediaUrl")
-            if audio_url:
-                audio_bytes = baixar_audio(audio_url)
-                text = "[audio]"
-            else:
-                return "ok", 200
-        else:
-            text = msg.get("content") or msg.get("text") or chat.get("wa_lastMessageTextVote")
-
-        if not number or (not text and not audio_bytes):
+        if not number or not text:
             return "ok", 200
 
-        if text and not isinstance(text, str):
+        if not isinstance(text, str):
             return "ok", 200
 
-        if text:
-            text = text.strip()
+        text = text.strip()
+        if not text:
+            return "ok", 200
 
-        reply = ask_gemini(number, text, audio_bytes)
+        reply = ask_openai(number, text)
         if reply:
             send(number, reply)
 
@@ -200,51 +174,59 @@ def webhook():
     return "ok", 200
 
 
-def ask_gemini(number, text, audio_bytes=None):
+def ask_openai(number, text):
     if number not in historico:
         historico[number] = []
 
-    is_primeira = len(historico[number]) == 0
+    historico[number].append({"role": "user", "content": text})
+
+    historico[number] = [
+        m for m in historico[number]
+        if isinstance(m.get("content"), str) and m["content"].strip()
+    ]
+
     saudacao = get_saudacao()
 
-    # Montar histórico no formato do google-genai
-    gemini_history = []
-    for m in historico[number][-10:]:
-        role = "user" if m["role"] == "user" else "model"
-        gemini_history.append(types.Content(role=role, parts=[types.Part(text=m["content"])]))
-
-    # Montar mensagem atual
-    parts = []
-    if audio_bytes:
-        parts.append(types.Part(inline_data=types.Blob(mime_type="audio/ogg", data=audio_bytes)))
-        instrucao = "Transcreva e responda ao audio como Isabela."
-        if is_primeira:
-            instrucao += f" Comece com '{saudacao}! Sou a Isabela, atendente virtual da Farmacia Saude e Vida. Como posso te ajudar hoje?'"
-        parts.append(types.Part(text=instrucao))
+    if len(historico[number]) == 1:
+        instrucao = (
+            SYSTEM_PROMPT
+            + f" Esta e a PRIMEIRA mensagem. Voce DEVE responder EXATAMENTE com:"
+            + f" {saudacao}! Sou a Isabela, atendente virtual da Farmacia Saude e Vida."
+            + f" Como posso te ajudar hoje? e nada mais."
+        )
     else:
-        msg_text = text
-        if is_primeira:
-            msg_text += f"\n\n[INSTRUCAO: Esta e a PRIMEIRA mensagem. Responda EXATAMENTE com: '{saudacao}! Sou a Isabela, atendente virtual da Farmacia Saude e Vida. Como posso te ajudar hoje?' e nada mais.]"
-        parts.append(types.Part(text=msg_text))
+        instrucao = SYSTEM_PROMPT + " Esta NAO e a primeira mensagem. NAO se apresente. Responda diretamente."
 
-    gemini_history.append(types.Content(role="user", parts=parts))
+    messages = [{"role": "system", "content": instrucao}] + historico[number][-10:]
+
+    h = {"Authorization": "Bearer " + KEY, "Content-Type": "application/json"}
+    b = {"model": "gpt-4o-mini", "messages": messages}
 
     try:
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=gemini_history,
-            config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            json=b, headers=h, timeout=30
         )
-        reply = response.text
+        r.raise_for_status()
+        resultado = r.json()
 
-        historico[number].append({"role": "user", "content": text or "[audio]"})
+        if not resultado.get("choices"):
+            return "Desculpe, tive um problema interno. Pode repetir sua mensagem?"
+
+        reply = resultado["choices"][0]["message"]["content"]
         historico[number].append({"role": "assistant", "content": reply})
-
         return reply
 
+    except requests.exceptions.Timeout:
+        return "Desculpe, demorei para responder. Pode repetir?"
+
+    except requests.exceptions.HTTPError as e:
+        print("ERRO HTTP OpenAI:", str(e))
+        return "Estou com uma instabilidade agora. Tente novamente em instantes!"
+
     except Exception as e:
-        print("ERRO Gemini:", e)
-        return "Desculpe, tive um problema interno. Pode repetir sua mensagem?"
+        print("ERRO inesperado OpenAI:", str(e))
+        return "Ocorreu um erro inesperado. Por favor, tente novamente."
 
 
 def send(number, text):
