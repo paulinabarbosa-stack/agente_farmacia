@@ -130,13 +130,30 @@ def get_saudacao():
         return "Boa noite"
 
 
-def baixar_audio(url):
+def baixar_audio_uazapi(message_id):
+    """Baixa audio usando endpoint da UAZAPI com o message_id"""
     try:
-        r = requests.get(url, timeout=15)
+        h = {"token": TOKEN}
+        url = BASE + "/message/download/" + message_id
+        r = requests.get(url, headers=h, timeout=30)
+        print("UAZAPI DOWNLOAD STATUS:", r.status_code)
         if r.status_code == 200:
-            return r.content
+            ct = r.headers.get("content-type", "")
+            if "audio" in ct or "octet" in ct or len(r.content) > 1000:
+                return r.content
+            # Pode vir JSON com URL
+            try:
+                data = r.json()
+                print("UAZAPI DOWNLOAD JSON:", data)
+                file_url = data.get("url") or data.get("fileUrl") or data.get("mediaUrl")
+                if file_url:
+                    r2 = requests.get(file_url, timeout=15)
+                    if r2.status_code == 200:
+                        return r2.content
+            except Exception:
+                pass
     except Exception as e:
-        print("ERRO ao baixar audio:", e)
+        print("ERRO download UAZAPI:", e)
     return None
 
 
@@ -159,7 +176,6 @@ def transcrever_audio(audio_bytes, filename="audio.ogg"):
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
-    print("WEBHOOK DATA:", data)
     try:
         msg = data.get("message", {})
         chat = data.get("chat", {})
@@ -175,45 +191,36 @@ def webhook():
             if len(mensagens_processadas) > 10000:
                 mensagens_processadas.clear()
 
-        number = msg.get("chatid", "").replace("@s.whatsapp.net", "")
+        number = msg.get("chatid", "").replace("@s.whatsapp.net", "").replace("@lid", "")
         if not number:
-            number = chat.get("wa_chatid", "").replace("@s.whatsapp.net", "")
+            number = chat.get("wa_chatid", "").replace("@s.whatsapp.net", "").replace("@lid", "")
 
         msg_type = msg.get("type", "")
-        text = None
+        media_type = msg.get("mediaType", "")
+        mimetype = str(msg.get("mimetype", ""))
+        is_ptt = msg.get("PTT", False) or msg.get("ptt", False)
 
-        # Detecta audio: type ptt, audio, ou media com mimetype audio
         is_audio = (
             msg_type in ("audio", "ptt") or
-            (msg_type == "media" and str(msg.get("mimetype", "")).startswith("audio")) or
-            (msg_type == "media" and msg.get("PTT") is True)
+            media_type == "ptt" or
+            is_ptt or
+            mimetype.startswith("audio")
         )
 
-        if is_audio:
-            content = msg.get("content")
-            if isinstance(content, dict):
-                audio_url = content.get("URL") or content.get("url")
-            else:
-                audio_url = str(content) if content else None
+        print(f"TYPE:{msg_type} MEDIA:{media_type} PTT:{is_ptt} IS_AUDIO:{is_audio} ID:{message_id}")
 
-            if not audio_url or not audio_url.startswith("http"):
-                audio_url = msg.get("url") or msg.get("mediaUrl")
+        text = None
 
-            print("AUDIO URL:", audio_url)
-
-            if audio_url and audio_url.startswith("http"):
-                audio_bytes = baixar_audio(audio_url)
-                if audio_bytes:
-                    text = transcrever_audio(audio_bytes)
-                    print("TRANSCRICAO:", text)
-                    if not text:
-                        send(number, "Desculpe, nao consegui entender o audio. Pode digitar sua mensagem?")
-                        return "ok", 200
-                else:
-                    send(number, "Desculpe, nao consegui processar o audio. Pode digitar sua mensagem?")
+        if is_audio and message_id:
+            audio_bytes = baixar_audio_uazapi(message_id)
+            if audio_bytes:
+                text = transcrever_audio(audio_bytes)
+                print("TRANSCRICAO:", text)
+                if not text:
+                    send(number, "Desculpe, nao consegui entender o audio. Pode digitar sua mensagem?")
                     return "ok", 200
             else:
-                send(number, "Desculpe, nao consegui acessar o audio. Pode digitar sua mensagem?")
+                send(number, "Desculpe, nao consegui processar o audio. Pode digitar sua mensagem?")
                 return "ok", 200
         else:
             text = msg.get("content") or msg.get("text") or chat.get("wa_lastMessageTextVote")
