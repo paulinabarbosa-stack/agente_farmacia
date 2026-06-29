@@ -182,19 +182,38 @@ def webhook():
         msg_type = msg.get("type", "")
         text = None
 
-        # Áudio — transcreve com Whisper
-        if msg_type in ("audio", "ptt"):
-            audio_url = msg.get("content") or msg.get("url") or msg.get("mediaUrl")
-            if audio_url:
+        # Detecta audio: type ptt, audio, ou media com mimetype audio
+        is_audio = (
+            msg_type in ("audio", "ptt") or
+            (msg_type == "media" and str(msg.get("mimetype", "")).startswith("audio")) or
+            (msg_type == "media" and msg.get("PTT") is True)
+        )
+
+        if is_audio:
+            content = msg.get("content")
+            if isinstance(content, dict):
+                audio_url = content.get("URL") or content.get("url")
+            else:
+                audio_url = str(content) if content else None
+
+            if not audio_url or not audio_url.startswith("http"):
+                audio_url = msg.get("url") or msg.get("mediaUrl")
+
+            print("AUDIO URL:", audio_url)
+
+            if audio_url and audio_url.startswith("http"):
                 audio_bytes = baixar_audio(audio_url)
                 if audio_bytes:
                     text = transcrever_audio(audio_bytes)
+                    print("TRANSCRICAO:", text)
                     if not text:
                         send(number, "Desculpe, nao consegui entender o audio. Pode digitar sua mensagem?")
                         return "ok", 200
                 else:
+                    send(number, "Desculpe, nao consegui processar o audio. Pode digitar sua mensagem?")
                     return "ok", 200
             else:
+                send(number, "Desculpe, nao consegui acessar o audio. Pode digitar sua mensagem?")
                 return "ok", 200
         else:
             text = msg.get("content") or msg.get("text") or chat.get("wa_lastMessageTextVote")
