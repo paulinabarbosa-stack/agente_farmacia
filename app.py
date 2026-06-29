@@ -130,6 +130,32 @@ def get_saudacao():
         return "Boa noite"
 
 
+def baixar_audio(url):
+    try:
+        r = requests.get(url, timeout=15)
+        if r.status_code == 200:
+            return r.content
+    except Exception as e:
+        print("ERRO ao baixar audio:", e)
+    return None
+
+
+def transcrever_audio(audio_bytes, filename="audio.ogg"):
+    try:
+        h = {"Authorization": "Bearer " + KEY}
+        files = {"file": (filename, audio_bytes, "audio/ogg")}
+        data = {"model": "whisper-1", "language": "pt"}
+        r = requests.post(
+            "https://api.openai.com/v1/audio/transcriptions",
+            headers=h, files=files, data=data, timeout=30
+        )
+        r.raise_for_status()
+        return r.json().get("text", "").strip()
+    except Exception as e:
+        print("ERRO Whisper:", e)
+        return None
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
@@ -152,7 +178,25 @@ def webhook():
         if not number:
             number = chat.get("wa_chatid", "").replace("@s.whatsapp.net", "")
 
-        text = msg.get("content") or msg.get("text") or chat.get("wa_lastMessageTextVote")
+        msg_type = msg.get("type", "")
+        text = None
+
+        # Áudio — transcreve com Whisper
+        if msg_type in ("audio", "ptt"):
+            audio_url = msg.get("content") or msg.get("url") or msg.get("mediaUrl")
+            if audio_url:
+                audio_bytes = baixar_audio(audio_url)
+                if audio_bytes:
+                    text = transcrever_audio(audio_bytes)
+                    if not text:
+                        send(number, "Desculpe, nao consegui entender o audio. Pode digitar sua mensagem?")
+                        return "ok", 200
+                else:
+                    return "ok", 200
+            else:
+                return "ok", 200
+        else:
+            text = msg.get("content") or msg.get("text") or chat.get("wa_lastMessageTextVote")
 
         if not number or not text:
             return "ok", 200
