@@ -147,22 +147,31 @@ def baixar_audio(url):
     return None
 
 
-def transcrever_audio(audio_bytes, filename="audio.oga"):
-    try:
-        h = {"Authorization": "Bearer " + KEY}
-        files = {"file": ("audio.oga", audio_bytes, "audio/ogg")}
-        data = {"model": "whisper-1", "language": "pt"}
-        r = requests.post(
-            "https://api.openai.com/v1/audio/transcriptions",
-            headers=h, files=files, data=data, timeout=30
-        )
-        r.raise_for_status()
-        transcricao = r.json().get("text", "").strip()
-        print("TRANSCRICAO:", transcricao)
-        return transcricao
-    except Exception as e:
-        print("ERRO Whisper:", e)
-        return None
+def transcrever_audio(audio_bytes):
+    """Tenta transcrever audio com diferentes formatos aceitos pelo Whisper"""
+    h = {"Authorization": "Bearer " + KEY}
+    data = {"model": "whisper-1", "language": "pt"}
+    formatos = [
+        ("audio.mp3", "audio/mpeg"),
+        ("audio.ogg", "audio/ogg"),
+        ("audio.wav", "audio/wav"),
+        ("audio.m4a", "audio/mp4"),
+    ]
+    for filename, mimetype in formatos:
+        try:
+            files = {"file": (filename, audio_bytes, mimetype)}
+            r = requests.post(
+                "https://api.openai.com/v1/audio/transcriptions",
+                headers=h, files=files, data=data, timeout=30
+            )
+            print(f"WHISPER {filename} STATUS:{r.status_code}")
+            if r.status_code == 200:
+                transcricao = r.json().get("text", "").strip()
+                print("TRANSCRICAO:", transcricao)
+                return transcricao
+        except Exception as e:
+            print(f"ERRO Whisper {filename}:", e)
+    return None
 
 
 @app.route("/webhook", methods=["POST"])
