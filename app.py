@@ -159,6 +159,7 @@ def transcrever_audio(audio_bytes, filename="audio.ogg"):
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
+    print("WEBHOOK DATA:", data)
     try:
         msg = data.get("message", {})
         chat = data.get("chat", {})
