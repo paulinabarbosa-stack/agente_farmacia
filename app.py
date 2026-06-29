@@ -147,10 +147,10 @@ def baixar_audio(url):
     return None
 
 
-def transcrever_audio(audio_bytes, filename="audio.ogg"):
+def transcrever_audio(audio_bytes, filename="audio.oga"):
     try:
         h = {"Authorization": "Bearer " + KEY}
-        files = {"file": (filename, audio_bytes, "audio/ogg")}
+        files = {"file": ("audio.oga", audio_bytes, "audio/ogg")}
         data = {"model": "whisper-1", "language": "pt"}
         r = requests.post(
             "https://api.openai.com/v1/audio/transcriptions",
