@@ -85,6 +85,13 @@ SUAS FUNCOES:
 5. Agendar entregas em domicilio
 6. Agendar consultas com farmaceutico coletando: nome, telefone e melhor horario
 
+REGRA CRITICA DE TRANSFERENCIA PARA O FARMACEUTICO:
+Se o cliente pedir INDICACAO, SUGESTAO ou ORIENTACAO sobre qual medicamento tomar para um sintoma, dor ou problema de saude (exemplos: "o que eu tomo pra dor de cabeca", "me indica um remedio pra gripe", "qual o melhor remedio para dor nas costas", "estou com febre, o que eu tomo"), voce NAO deve sugerir nenhum medicamento.
+Nesse caso, responda EXATAMENTE e SOMENTE com o texto: TRANSFERIR_FARMACEUTICO
+Nao escreva mais nada alem dessas palavras quando isso acontecer.
+
+Isso e DIFERENTE de quando o cliente ja sabe o nome do medicamento e so quer saber preco ou disponibilidade (exemplo: "voces tem dipirona?", "quanto custa o paracetamol?") - nesses casos, responda normalmente com a tabela de precos.
+
 FLUXO DE PEDIDO OBRIGATORIO:
 Quando o cliente quiser comprar, siga SEMPRE esta ordem:
 1. Confirme o produto e o preco
@@ -119,6 +126,7 @@ REGRAS OBRIGATORIAS:
 
 historico = {}
 mensagens_processadas = set()
+transferido = {}
 
 
 def get_saudacao():
@@ -183,7 +191,19 @@ def webhook():
         msg = data.get("message", {})
         chat = data.get("chat", {})
 
-        if msg.get("wasSentByApi") or msg.get("fromMe"):
+        number = msg.get("chatid", "").replace("@s.whatsapp.net", "").replace("@lid", "")
+        if not number:
+            number = chat.get("wa_chatid", "").replace("@s.whatsapp.net", "").replace("@lid", "")
+
+        is_from_me = msg.get("wasSentByApi") or msg.get("fromMe")
+
+        if is_from_me:
+            # Pode ser o farmaceutico digitando o comando para devolver a conversa pra Isabela
+            texto_fromme = msg.get("content") or msg.get("text") or ""
+            if isinstance(texto_fromme, str) and "/voltarbot" in texto_fromme.lower():
+                if number:
+                    transferido[number] = False
+                    print(f"CONVERSA DEVOLVIDA PARA ISABELA: {number}")
             return "ok", 200
 
         message_id = msg.get("id", "")
@@ -194,9 +214,9 @@ def webhook():
             if len(mensagens_processadas) > 10000:
                 mensagens_processadas.clear()
 
-        number = msg.get("chatid", "").replace("@s.whatsapp.net", "").replace("@lid", "")
-        if not number:
-            number = chat.get("wa_chatid", "").replace("@s.whatsapp.net", "").replace("@lid", "")
+        # Se a conversa esta transferida pro farmaceutico, a Isabela fica em silencio
+        if number and transferido.get(number):
+            return "ok", 200
 
         msg_type = msg.get("type", "")
         media_type = msg.get("mediaType", "")
@@ -215,7 +235,6 @@ def webhook():
         text = None
 
         if is_audio:
-            # Extrair URL do content (pode ser dict ou string)
             content = msg.get("content")
             audio_url = None
             if isinstance(content, dict):
@@ -223,7 +242,6 @@ def webhook():
             elif isinstance(content, str) and content.startswith("http"):
                 audio_url = content
 
-            # Fallback para directPath via UAZAPI proxy
             if not audio_url:
                 direct_path = msg.get("directPath", "")
                 if direct_path:
@@ -259,7 +277,12 @@ def webhook():
 
         reply = ask_openai(number, text)
         if reply:
-            send(number, reply)
+            if "TRANSFERIR_FARMACEUTICO" in reply:
+                transferido[number] = True
+                print(f"CONVERSA TRANSFERIDA PARA FARMACEUTICO: {number}")
+                send(number, "Vou te conectar com nosso farmaceutico para te orientar melhor sobre isso, so um momento! 😊")
+            else:
+                send(number, reply)
 
     except Exception as e:
         print("ERROR:", e)
