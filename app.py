@@ -192,9 +192,11 @@ def webhook():
         msg = data.get("message", {})
         chat = data.get("chat", {})
 
-        number = msg.get("chatid", "").replace("@s.whatsapp.net", "").replace("@lid", "")
+        number = msg.get("sender_pn", "").replace("@s.whatsapp.net", "").replace("@lid", "")
         if not number:
             number = chat.get("wa_chatid", "").replace("@s.whatsapp.net", "").replace("@lid", "")
+        if not number:
+            number = msg.get("chatid", "").replace("@s.whatsapp.net", "").replace("@lid", "")
 
         is_from_me = msg.get("wasSentByApi") or msg.get("fromMe")
 
