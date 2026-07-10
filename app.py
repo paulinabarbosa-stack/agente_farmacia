@@ -187,6 +187,7 @@ def transcrever_audio(audio_bytes):
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
+    print("PAYLOAD COMPLETO:", data)
     try:
         msg = data.get("message", {})
         chat = data.get("chat", {})
@@ -198,7 +199,6 @@ def webhook():
         is_from_me = msg.get("wasSentByApi") or msg.get("fromMe")
 
         if is_from_me:
-            # Pode ser o farmaceutico digitando o comando para devolver a conversa pra Isabela
             texto_fromme = msg.get("content") or msg.get("text") or ""
             if isinstance(texto_fromme, str) and "/voltarbot" in texto_fromme.lower():
                 if number:
@@ -214,7 +214,6 @@ def webhook():
             if len(mensagens_processadas) > 10000:
                 mensagens_processadas.clear()
 
-        # Se a conversa esta transferida pro farmaceutico, a Isabela fica em silencio
         if number and transferido.get(number):
             return "ok", 200
 
