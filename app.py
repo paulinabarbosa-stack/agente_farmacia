@@ -184,6 +184,23 @@ def transcrever_audio(audio_bytes):
     return None
 
 
+def extrair_texto(msg):
+    """Extrai o texto da mensagem, tratando o caso do content vir como dicionario"""
+    texto_direto = msg.get("text")
+    if isinstance(texto_direto, str) and texto_direto.strip():
+        return texto_direto
+
+    content = msg.get("content")
+    if isinstance(content, str) and content.strip():
+        return content
+    if isinstance(content, dict):
+        texto_no_content = content.get("text")
+        if isinstance(texto_no_content, str) and texto_no_content.strip():
+            return texto_no_content
+
+    return None
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
@@ -201,8 +218,8 @@ def webhook():
         is_from_me = msg.get("wasSentByApi") or msg.get("fromMe")
 
         if is_from_me:
-            texto_fromme = msg.get("content") or msg.get("text") or ""
-            if isinstance(texto_fromme, str) and "/voltarbot" in texto_fromme.lower():
+            texto_fromme = extrair_texto(msg) or ""
+            if "/voltarbot" in texto_fromme.lower():
                 if number:
                     transferido[number] = False
                     print(f"CONVERSA DEVOLVIDA PARA ISABELA: {number}")
@@ -264,7 +281,7 @@ def webhook():
                 send(number, "Desculpe, nao consegui acessar o audio. Pode digitar sua mensagem?")
                 return "ok", 200
         else:
-            text = msg.get("content") or msg.get("text") or chat.get("wa_lastMessageTextVote")
+            text = extrair_texto(msg) or chat.get("wa_lastMessageTextVote")
 
         if not number or not text:
             return "ok", 200
