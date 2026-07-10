@@ -201,6 +201,12 @@ def extrair_texto(msg):
     return None
 
 
+def limpar_numero(valor):
+    if not isinstance(valor, str):
+        return ""
+    return valor.replace("@s.whatsapp.net", "").replace("@lid", "")
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
@@ -209,21 +215,29 @@ def webhook():
         msg = data.get("message", {})
         chat = data.get("chat", {})
 
-        number = msg.get("sender_pn", "").replace("@s.whatsapp.net", "").replace("@lid", "")
-        if not number:
-            number = chat.get("wa_chatid", "").replace("@s.whatsapp.net", "").replace("@lid", "")
-        if not number:
-            number = msg.get("chatid", "").replace("@s.whatsapp.net", "").replace("@lid", "")
-
         is_from_me = msg.get("wasSentByApi") or msg.get("fromMe")
 
         if is_from_me:
+            # Quando a mensagem e enviada pela propria farmacia (farmaceutico),
+            # o numero do CLIENTE vem do chatid, e nao do sender_pn
+            # (sender_pn nesse caso e o numero da propria farmacia)
+            number = limpar_numero(msg.get("chatid"))
+            if not number:
+                number = limpar_numero(chat.get("wa_chatid"))
+
             texto_fromme = extrair_texto(msg) or ""
             if "/voltarbot" in texto_fromme.lower():
                 if number:
                     transferido[number] = False
                     print(f"CONVERSA DEVOLVIDA PARA ISABELA: {number}")
             return "ok", 200
+
+        # Mensagem do cliente: o numero dele vem do sender_pn
+        number = limpar_numero(msg.get("sender_pn"))
+        if not number:
+            number = limpar_numero(chat.get("wa_chatid"))
+        if not number:
+            number = limpar_numero(msg.get("chatid"))
 
         message_id = msg.get("id", "")
         if message_id in mensagens_processadas:
