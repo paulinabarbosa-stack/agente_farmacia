@@ -398,9 +398,9 @@ def registrar_venda(number, produto, quantidade, valor_unitario):
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return
     try:
-        quantidade = float(quantidade or 1)
+        quantidade_num = float(quantidade or 1)
         valor_unitario = float(valor_unitario or 0)
-        valor_total = round(quantidade * valor_unitario, 2)
+        valor_total = round(quantidade_num * valor_unitario, 2)
 
         headers = {
             "apikey": SUPABASE_ANON_KEY,
@@ -409,7 +409,7 @@ def registrar_venda(number, produto, quantidade, valor_unitario):
         }
         body = {
             "produto_nome_texto": produto,
-            "quantidade": quantidade,
+            "quantidade": int(round(quantidade_num)),
             "valor_unitario": valor_unitario,
             "valor_total": valor_total,
             "origem": "whatsapp",
