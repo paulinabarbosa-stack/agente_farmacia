@@ -274,6 +274,8 @@ def webhook():
                     mensagens_farmaceutico[number] = []
                     transferido[number] = False
                     print(f"CONVERSA DEVOLVIDA PARA ISABELA: {number} | RESUMO: {resumo_texto}")
+                    if resumo_texto:
+                        oferecer_produto_proativamente(number)
             else:
                 if number and transferido.get(number) and texto_fromme.strip():
                     mensagens_farmaceutico.setdefault(number, []).append(texto_fromme.strip())
@@ -321,6 +323,8 @@ def webhook():
                     mensagens_farmaceutico[alvo] = []
                     transferido[alvo] = False
                     print(f"[TESTE] CONVERSA DEVOLVIDA PARA ISABELA: {alvo} | RESUMO: {resumo_texto}")
+                    if resumo_texto:
+                        oferecer_produto_proativamente(alvo)
             else:
                 if alvo and transferido.get(alvo) and texto_farmaceutico.strip():
                     mensagens_farmaceutico.setdefault(alvo, []).append(texto_farmaceutico.strip())
@@ -408,9 +412,11 @@ def webhook():
                 resumo_para_farmaceutico = (
                     f"📋 Novo atendimento transferido!\n"
                     f"Cliente: {number}\n"
+                    f"Abrir conversa direto com o cliente: https://wa.me/{number}\n"
                     f"Pergunta do cliente: \"{text}\"\n\n"
-                    f"Responda aqui mesmo para orientar o cliente. Quando terminar, "
-                    f"envie /voltarbot para devolver o atendimento para a Isabela."
+                    f"Fale diretamente com o cliente pelo link acima. Quando terminar, "
+                    f"envie aqui /voltarbot seguido do resumo da orientacao "
+                    f"(ex: /voltarbot Recomendei Dipirona 500mg, 1 comprimido a cada 6 horas)."
                 )
                 send(FARMACEUTICO_TESTE, resumo_para_farmaceutico)
             else:
@@ -475,6 +481,46 @@ def ask_openai(number, text):
     except Exception as e:
         print("ERRO inesperado OpenAI:", str(e))
         return "Ocorreu um erro inesperado. Por favor, tente novamente."
+
+
+def oferecer_produto_proativamente(number):
+    """Chamada logo apos o farmaceutico devolver o atendimento (/voltarbot).
+    Faz a Isabela oferecer o produto recomendado, com preco, sem esperar
+    o cliente falar antes."""
+    if number not in historico:
+        historico[number] = []
+
+    instrucao = (
+        SYSTEM_PROMPT
+        + " O farmaceutico acabou de orientar o cliente (veja a mensagem de sistema mais recente"
+        + " no historico). Agora, SEM esperar o cliente responder, ofereca proativamente o produto"
+        + " recomendado, informando o nome e o preco da tabela. Se for medicamento controlado,"
+        + " lembre da necessidade de receita medica. Pergunte se o cliente deseja finalizar a compra."
+        + " Nao se apresente novamente."
+    )
+
+    messages = [{"role": "system", "content": instrucao}] + historico[number][-12:]
+
+    h = {"Authorization": "Bearer " + KEY, "Content-Type": "application/json"}
+    b = {"model": "gpt-4o-mini", "messages": messages}
+
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            json=b, headers=h, timeout=30
+        )
+        r.raise_for_status()
+        resultado = r.json()
+
+        if not resultado.get("choices"):
+            return
+
+        reply = resultado["choices"][0]["message"]["content"]
+        historico[number].append({"role": "assistant", "content": reply})
+        send(number, reply)
+
+    except Exception as e:
+        print("ERRO ao oferecer produto proativamente:", e)
 
 
 def send(number, text):
