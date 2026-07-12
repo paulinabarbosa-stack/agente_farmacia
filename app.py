@@ -2,6 +2,7 @@ from flask import Flask, request
 import requests
 import os
 import re
+import json
 import threading
 import time
 from datetime import datetime
@@ -334,6 +335,92 @@ def marcar_seguimento_respondido(number):
     seguimento_pendente_id.pop(number, None)
 
 
+def registrar_conversa(number, mensagem, resposta, transferida=False, motivo=None):
+    """Grava no Supabase cada troca real entre o cliente e a Isabela."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        return
+    try:
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "cliente_telefone": number,
+            "mensagem": mensagem,
+            "resposta": resposta,
+            "transferida_humano": transferida,
+        }
+        if motivo:
+            body["motivo_transferencia"] = motivo
+        requests.post(f"{SUPABASE_URL}/rest/v1/conversas", json=body, headers=headers, timeout=15)
+    except Exception as e:
+        print("ERRO ao registrar conversa:", e)
+
+
+def extrair_dados_venda(number):
+    """Pede pra IA extrair produto/quantidade/valor da conversa que acabou de fechar."""
+    if number not in historico:
+        return None
+
+    instrucao = (
+        "Baseado na conversa abaixo, extraia os dados da venda que acabou de ser fechada. "
+        "Responda APENAS em JSON puro, sem nenhum texto adicional, exatamente neste formato: "
+        '{"produto": "nome do produto", "quantidade": 1, "valor_unitario": 0.00}. '
+        'Se nao conseguir identificar com certeza, responda {"produto": null}.'
+    )
+    messages = [{"role": "system", "content": instrucao}] + historico[number][-14:]
+
+    h = {"Authorization": "Bearer " + KEY, "Content-Type": "application/json"}
+    b = {"model": "gpt-4o-mini", "messages": messages}
+
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            json=b, headers=h, timeout=30
+        )
+        r.raise_for_status()
+        resultado = r.json()
+        conteudo = resultado["choices"][0]["message"]["content"].strip()
+        conteudo = re.sub(r"^```json|^```|```$", "", conteudo, flags=re.MULTILINE).strip()
+        dados = json.loads(conteudo)
+        if not dados.get("produto"):
+            return None
+        return dados
+    except Exception as e:
+        print("ERRO ao extrair dados da venda:", e)
+        return None
+
+
+def registrar_venda(number, produto, quantidade, valor_unitario):
+    """Grava no Supabase a venda fechada pela Isabela (sem unidade vinculada,
+    para medir separadamente o quanto a IA vende sozinha)."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        return
+    try:
+        quantidade = float(quantidade or 1)
+        valor_unitario = float(valor_unitario or 0)
+        valor_total = round(quantidade * valor_unitario, 2)
+
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "produto_nome_texto": produto,
+            "quantidade": quantidade,
+            "valor_unitario": valor_unitario,
+            "valor_total": valor_total,
+            "origem": "whatsapp",
+            "cliente_telefone": number,
+        }
+        r = requests.post(f"{SUPABASE_URL}/rest/v1/vendas", json=body, headers=headers, timeout=15)
+        print("VENDA REGISTRADA:", r.status_code, r.text)
+    except Exception as e:
+        print("ERRO ao registrar venda:", e)
+
+
 def verificar_seguimentos():
     """Roda em segundo plano, verificando periodicamente quais clientes
     pararam de responder e enviando o follow-up no estagio certo."""
@@ -556,7 +643,13 @@ def webhook():
                 mensagens_farmaceutico[number] = []
                 ultimo_cliente_transferido = number
                 print(f"CONVERSA TRANSFERIDA PARA FARMACEUTICO: {number}")
-                send(number, "Vou te conectar com nosso farmaceutico para te orientar melhor sobre isso, so um momento! 😊")
+                mensagem_transferencia = "Vou te conectar com nosso farmaceutico para te orientar melhor sobre isso, so um momento! 😊"
+                send(number, mensagem_transferencia)
+                registrar_conversa(
+                    number, text, mensagem_transferencia,
+                    transferida=True,
+                    motivo="Cliente pediu indicacao/sugestao de medicamento",
+                )
 
                 resumo_para_farmaceutico = (
                     f"📋 Novo atendimento transferido!\n"
@@ -570,9 +663,18 @@ def webhook():
                 send(FARMACEUTICO_TESTE, resumo_para_farmaceutico)
             else:
                 send(number, reply)
+                registrar_conversa(number, text, reply)
                 if "Foi um prazer te atender" in reply:
                     encerrado[number] = True
                     print(f"CONVERSA ENCERRADA (aguardando so despedidas): {number}")
+                    dados_venda = extrair_dados_venda(number)
+                    if dados_venda:
+                        registrar_venda(
+                            number,
+                            dados_venda.get("produto"),
+                            dados_venda.get("quantidade", 1),
+                            dados_venda.get("valor_unitario", 0),
+                        )
 
     except Exception as e:
         print("ERROR:", e)
@@ -670,6 +772,7 @@ def oferecer_produto_proativamente(number):
         reply = resultado["choices"][0]["message"]["content"]
         historico[number].append({"role": "assistant", "content": reply})
         send(number, reply)
+        registrar_conversa(number, "[Retomado apos orientacao do farmaceutico]", reply)
 
     except Exception as e:
         print("ERRO ao oferecer produto proativamente:", e)
