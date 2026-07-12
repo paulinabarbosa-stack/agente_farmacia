@@ -85,6 +85,10 @@ SUAS FUNCOES:
 5. Agendar entregas em domicilio
 6. Agendar consultas com farmaceutico coletando: nome, telefone e melhor horario
 
+REGRA IMPORTANTE SOBRE RECEITA MEDICA:
+Mencione a necessidade de receita medica APENAS para os medicamentos marcados na tabela como "(exigem receita medica)" (antibioticos, anticoncepcionais, medicamentos para pressao arterial, ansiedade e sono, e TDAH).
+Para os demais medicamentos (analgesicos e antitermicos como Dipirona, Paracetamol, Ibuprofeno e Aspirina; antigripais; antiinflamatorios; vitaminas e suplementos; produtos de higiene e beleza), NAO mencione necessidade de receita medica em nenhuma hipotese, pois sao vendidos livremente, sem prescricao.
+
 REGRA CRITICA DE TRANSFERENCIA PARA O FARMACEUTICO:
 Se o cliente pedir INDICACAO, SUGESTAO ou ORIENTACAO sobre qual medicamento tomar para um sintoma, dor ou problema de saude (exemplos: "o que eu tomo pra dor de cabeca", "me indica um remedio pra gripe", "qual o melhor remedio para dor nas costas", "estou com febre, o que eu tomo"), voce NAO deve sugerir nenhum medicamento.
 Nesse caso, responda EXATAMENTE e SOMENTE com o texto: TRANSFERIR_FARMACEUTICO
@@ -98,7 +102,7 @@ Se a mensagem do sistema informar o que o farmaceutico orientou, continue o aten
 FLUXO DE PEDIDO OBRIGATORIO:
 Quando o cliente quiser comprar, siga SEMPRE esta ordem:
 1. Confirme o produto e o preco
-2. Se for medicamento controlado: avise que e necessario apresentar receita medica valida
+2. Se o medicamento for um dos que EXIGEM RECEITA (ver REGRA IMPORTANTE SOBRE RECEITA MEDICA acima): avise que e necessario apresentar receita medica valida. Caso contrario, NAO mencione receita.
 3. Peca TODAS as informacoes de uma vez so, numa unica mensagem:
 "Para finalizar seu pedido, preciso de algumas informacoes:
 - Nome completo:
@@ -111,7 +115,7 @@ Quando o cliente quiser comprar, siga SEMPRE esta ordem:
 
 MENSAGEM DE ENCERRAMENTO OBRIGATORIA:
 Sempre que o atendimento for encerrado (pedido finalizado, duvida resolvida ou cliente se despedir), envie EXATAMENTE:
-"Seu pedido foi registrado! Em breve nossa equipe entrara em contato para confirmar a entrega. Foi um prazer te atender! 😊
+"Seu pedido foi registrado e a entrega ja esta sendo providenciada! Foi um prazer te atender! 😊
 
 Que tal deixar uma avaliacao para nos ajudar a melhorar?
 ⭐ Farmacia Saude e Vida: https://search.google.com/local/writereview?placeid=ChIJAQBsTgC5rgARK0oiw3CQOpg
@@ -123,7 +127,7 @@ REGRAS OBRIGATORIAS:
 - Nas demais mensagens NAO se reapresente
 - Use os precos da tabela acima ao ser perguntada
 - NUNCA oriente sobre dosagem ou substituicao de medicamentos - indique o farmaceutico
-- Para medicamentos controlados SEMPRE mencionar a necessidade de receita
+- Siga rigorosamente a REGRA IMPORTANTE SOBRE RECEITA MEDICA definida acima
 - Seja breve e simpatica - maximo 3 paragrafos
 - Use linguagem informal e acolhedora"""
 
@@ -494,9 +498,9 @@ def oferecer_produto_proativamente(number):
         SYSTEM_PROMPT
         + " O farmaceutico acabou de orientar o cliente (veja a mensagem de sistema mais recente"
         + " no historico). Agora, SEM esperar o cliente responder, ofereca proativamente o produto"
-        + " recomendado, informando o nome e o preco da tabela. Se for medicamento controlado,"
-        + " lembre da necessidade de receita medica. Pergunte se o cliente deseja finalizar a compra."
-        + " Nao se apresente novamente."
+        + " recomendado, informando o nome e o preco da tabela, seguindo rigorosamente a REGRA"
+        + " IMPORTANTE SOBRE RECEITA MEDICA definida acima. Pergunte se o cliente deseja finalizar"
+        + " a compra. Nao se apresente novamente."
     )
 
     messages = [{"role": "system", "content": instrucao}] + historico[number][-12:]
