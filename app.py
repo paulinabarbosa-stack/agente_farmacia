@@ -102,6 +102,11 @@ Nao escreva mais nada alem dessas palavras quando isso acontecer.
 
 Isso e DIFERENTE de quando o cliente ja sabe o nome do medicamento e so quer saber preco ou disponibilidade (exemplo: "voces tem dipirona?", "quanto custa o paracetamol?") - nesses casos, responda normalmente com a tabela de precos.
 
+REGRA CRITICA DE CONSULTA DE ENTREGA:
+Se o cliente perguntar sobre o andamento/status da entrega dele (exemplos: "meu pedido ja saiu para entrega?", "cade minha entrega", "meu pedido ja foi entregue?", "quando chega meu pedido"), voce NAO deve inventar nenhuma informacao sobre o status.
+Nesse caso, responda EXATAMENTE e SOMENTE com o texto: CONSULTAR_ENTREGA
+Nao escreva mais nada alem dessas palavras quando isso acontecer. O sistema vai consultar o status real e responder ao cliente automaticamente.
+
 QUANDO VOCE RECEBER DE VOLTA UMA CONVERSA QUE JA FOI ORIENTADA PELO FARMACEUTICO:
 Se a mensagem do sistema informar o que o farmaceutico orientou, continue o atendimento a partir dali, seguindo o FLUXO DE PEDIDO OBRIGATORIO abaixo, considerando o produto que foi recomendado. Nao pergunte de novo qual e o sintoma nem sugira outro produto - use exatamente o que o farmaceutico indicou.
 
@@ -421,6 +426,62 @@ def registrar_venda(number, produto, quantidade, valor_unitario):
         print("ERRO ao registrar venda:", e)
 
 
+def formatar_hora_br(iso_str):
+    """Converte um timestamp ISO do Supabase para horario de Brasilia (HH:MM)."""
+    try:
+        texto = iso_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(texto)
+        dt_sp = dt.astimezone(pytz.timezone("America/Sao_Paulo"))
+        return dt_sp.strftime("%H:%M")
+    except Exception:
+        return ""
+
+
+MAPA_STATUS_ENTREGA = {
+    "pendente": "seu pedido esta pendente, ainda vai ser preparado",
+    "em_preparo": "seu pedido esta sendo preparado",
+    "em_entrega": "seu pedido ja saiu para entrega! Deve chegar em breve",
+    "entregue": "seu pedido ja foi entregue",
+    "nao_encontrado": "nosso motoboy tentou entregar mas nao conseguiu te encontrar no endereco informado",
+    "devolvido": "o pedido foi devolvido",
+    "cancelado": "o pedido foi cancelado",
+}
+
+
+def consultar_status_entrega(number):
+    """Busca no Supabase o pedido mais recente do cliente e monta uma
+    resposta com o status real (a IA nunca inventa esse dado)."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        return "No momento nao consigo consultar o status da sua entrega. Tente novamente em instantes."
+    try:
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+        }
+        params = f"cliente_telefone=eq.{number}&order=criado_em.desc&limit=1"
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/pedidos?{params}", headers=headers, timeout=15)
+        dados = r.json()
+
+        if not dados:
+            return "Nao encontrei nenhum pedido recente no seu numero. Posso te ajudar com um novo pedido?"
+
+        pedido = dados[0]
+        status = pedido.get("status")
+        entregue_em = pedido.get("entregue_em")
+        texto_status = MAPA_STATUS_ENTREGA.get(status, "nao consegui identificar o status do seu pedido no momento")
+
+        if status == "entregue" and entregue_em:
+            hora = formatar_hora_br(entregue_em)
+            if hora:
+                return f"Oi! {texto_status}, as {hora}. Precisa de mais alguma coisa? 😊"
+
+        return f"Oi! {texto_status}. Qualquer novidade, te aviso por aqui! 😊"
+
+    except Exception as e:
+        print("ERRO ao consultar status de entrega:", e)
+        return "Tive um probleminha para consultar o status agora. Pode tentar de novo em instantes?"
+
+
 def verificar_seguimentos():
     """Roda em segundo plano, verificando periodicamente quais clientes
     pararam de responder e enviando o follow-up no estagio certo."""
@@ -661,6 +722,10 @@ def webhook():
                     f"(ex: /voltarbot Recomendei Dipirona 500mg, 1 comprimido a cada 6 horas)."
                 )
                 send(FARMACEUTICO_TESTE, resumo_para_farmaceutico)
+            elif "CONSULTAR_ENTREGA" in reply:
+                mensagem_status = consultar_status_entrega(number)
+                send(number, mensagem_status)
+                registrar_conversa(number, text, mensagem_status)
             else:
                 send(number, reply)
                 registrar_conversa(number, text, reply)
