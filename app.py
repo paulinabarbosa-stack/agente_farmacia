@@ -379,6 +379,15 @@ def webhook():
                 ultimo_cliente_transferido = number
                 print(f"CONVERSA TRANSFERIDA PARA FARMACEUTICO: {number}")
                 send(number, "Vou te conectar com nosso farmaceutico para te orientar melhor sobre isso, so um momento! 😊")
+
+                resumo_para_farmaceutico = (
+                    f"📋 Novo atendimento transferido!\n"
+                    f"Cliente: {number}\n"
+                    f"Pergunta do cliente: \"{text}\"\n\n"
+                    f"Responda aqui mesmo para orientar o cliente. Quando terminar, "
+                    f"envie /voltarbot para devolver o atendimento para a Isabela."
+                )
+                send(FARMACEUTICO_TESTE, resumo_para_farmaceutico)
             else:
                 send(number, reply)
 
