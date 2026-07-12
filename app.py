@@ -2,6 +2,8 @@ from flask import Flask, request
 import requests
 import os
 import re
+import threading
+import time
 from datetime import datetime
 import pytz
 
@@ -10,6 +12,8 @@ app = Flask(__name__)
 KEY = os.environ.get("OPENAI_API_KEY")
 BASE = os.environ.get("UAZAPI_URL")
 TOKEN = os.environ.get("UAZAPI_TOKEN")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
 
 SYSTEM_PROMPT = """Voce e Isabela, atendente virtual da Farmacia Saude e Vida, localizada em Diamantina-MG. Horario de funcionamento: 7h00 as 22h00, todos os dias.
 Seja sempre simpatica, acolhedora e prestativa. Represente a farmacia com cuidado e profissionalismo.
@@ -264,6 +268,105 @@ def e_mensagem_de_despedida(texto):
     return False
 
 
+# ---- FOLLOW-UP AUTOMATICO (Bloco 1) ----
+
+ultima_mensagem_cliente = {}   # number -> datetime da ultima mensagem do cliente
+estagios_enviados = {}         # number -> set de estagios ja enviados ("5min", "30min", "1h")
+seguimento_pendente_id = {}    # number -> id do seguimento aguardando resposta do cliente
+
+ESTAGIOS_FOLLOWUP = [
+    ("5min", 5, "Oi! Ainda esta por ai? Fico a disposicao se quiser continuar seu pedido 😊"),
+    ("30min", 30, "Notei que voce ficou um tempinho sem responder. Posso te ajudar com mais alguma coisa?"),
+    ("1h", 60, "So passando pra saber se ainda tem interesse no que conversamos. Se precisar, e so chamar!"),
+]
+
+
+def registrar_seguimento(number, estagio, mensagem):
+    """Salva no Supabase que um follow-up foi enviado. Retorna o id criado, ou None se falhar."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        return None
+    try:
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation",
+        }
+        body = {
+            "cliente_telefone": number,
+            "estagio": estagio,
+            "mensagem_enviada": mensagem,
+        }
+        r = requests.post(
+            f"{SUPABASE_URL}/rest/v1/seguimentos_ia",
+            json=body, headers=headers, timeout=15
+        )
+        if r.status_code in (200, 201):
+            dados = r.json()
+            if dados:
+                return dados[0].get("id")
+    except Exception as e:
+        print("ERRO ao registrar seguimento:", e)
+    return None
+
+
+def marcar_seguimento_respondido(number):
+    """Quando o cliente volta a responder, marca o ultimo seguimento pendente como respondido."""
+    seguimento_id = seguimento_pendente_id.get(number)
+    if not seguimento_id or not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        return
+    try:
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "cliente_respondeu": True,
+            "respondeu_em": datetime.now(pytz.timezone("America/Sao_Paulo")).isoformat(),
+        }
+        requests.patch(
+            f"{SUPABASE_URL}/rest/v1/seguimentos_ia?id=eq.{seguimento_id}",
+            json=body, headers=headers, timeout=15
+        )
+    except Exception as e:
+        print("ERRO ao marcar seguimento respondido:", e)
+    seguimento_pendente_id.pop(number, None)
+
+
+def verificar_seguimentos():
+    """Roda em segundo plano, verificando periodicamente quais clientes
+    pararam de responder e enviando o follow-up no estagio certo."""
+    while True:
+        try:
+            agora = datetime.now(pytz.timezone("America/Sao_Paulo"))
+            for number in list(ultima_mensagem_cliente.keys()):
+                if transferido.get(number):
+                    continue
+                if encerrado.get(number):
+                    continue
+
+                ultima = ultima_mensagem_cliente.get(number)
+                if not ultima:
+                    continue
+
+                decorridos_min = (agora - ultima).total_seconds() / 60
+                enviados = estagios_enviados.setdefault(number, set())
+
+                for nome_estagio, minutos, mensagem in ESTAGIOS_FOLLOWUP:
+                    if decorridos_min >= minutos and nome_estagio not in enviados:
+                        send(number, mensagem)
+                        seguimento_id = registrar_seguimento(number, nome_estagio, mensagem)
+                        if seguimento_id:
+                            seguimento_pendente_id[number] = seguimento_id
+                        enviados.add(nome_estagio)
+                        print(f"[FOLLOWUP] Estagio {nome_estagio} enviado para {number}")
+        except Exception as e:
+            print("ERRO no verificador de seguimentos:", e)
+
+        time.sleep(30)
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     global ultimo_cliente_transferido
@@ -439,6 +542,13 @@ def webhook():
             else:
                 encerrado[number] = False
 
+        # Cliente esta ativo: reinicia o contador do follow-up e marca
+        # como respondido qualquer seguimento que estivesse pendente
+        if number:
+            marcar_seguimento_respondido(number)
+            ultima_mensagem_cliente[number] = datetime.now(pytz.timezone("America/Sao_Paulo"))
+            estagios_enviados[number] = set()
+
         reply = ask_openai(number, text)
         if reply:
             if "TRANSFERIR_FARMACEUTICO" in reply:
@@ -573,6 +683,11 @@ def send(number, text):
         print("SEND:", r.status_code, r.text)
     except Exception as e:
         print("ERRO ao enviar mensagem:", e)
+
+
+# Inicia o verificador de follow-up em segundo plano assim que o app carrega
+# (funciona tanto rodando localmente quanto no Railway/gunicorn)
+threading.Thread(target=verificar_seguimentos, daemon=True).start()
 
 
 if __name__ == "__main__":
