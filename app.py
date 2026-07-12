@@ -148,6 +148,15 @@ def numero_e_farmaceutico_teste(number):
     return apenas_digitos.endswith(alvo[-8:])
 
 
+def extrair_resumo_apos_comando(texto):
+    """Se o farmaceutico escrever, por exemplo,
+    '/voltarbot Recomendei Dipirona 500mg', retorna 'Recomendei Dipirona 500mg'."""
+    idx = texto.lower().find("/voltarbot")
+    if idx == -1:
+        return ""
+    return texto[idx + len("/voltarbot"):].strip()
+
+
 def get_saudacao():
     tz = pytz.timezone("America/Sao_Paulo")
     hora = datetime.now(tz).hour
@@ -244,8 +253,14 @@ def webhook():
             if "/voltarbot" in texto_fromme.lower():
                 if number:
                     resumo_lista = mensagens_farmaceutico.get(number, [])
+                    resumo_inline = extrair_resumo_apos_comando(texto_fromme)
+                    partes_resumo = []
                     if resumo_lista:
-                        resumo_texto = " ".join(resumo_lista)
+                        partes_resumo.append(" ".join(resumo_lista))
+                    if resumo_inline:
+                        partes_resumo.append(resumo_inline)
+                    resumo_texto = " ".join(partes_resumo).strip()
+                    if resumo_texto:
                         if number not in historico:
                             historico[number] = []
                         historico[number].append({
@@ -256,9 +271,9 @@ def webhook():
                                 "considerando esse produto recomendado, sem perguntar novamente qual e o sintoma."
                             )
                         })
-                        mensagens_farmaceutico[number] = []
+                    mensagens_farmaceutico[number] = []
                     transferido[number] = False
-                    print(f"CONVERSA DEVOLVIDA PARA ISABELA: {number} | RESUMO: {resumo_lista}")
+                    print(f"CONVERSA DEVOLVIDA PARA ISABELA: {number} | RESUMO: {resumo_texto}")
             else:
                 if number and transferido.get(number) and texto_fromme.strip():
                     mensagens_farmaceutico.setdefault(number, []).append(texto_fromme.strip())
@@ -273,7 +288,11 @@ def webhook():
             number = limpar_numero(msg.get("chatid"))
 
         # Se a mensagem veio do numero de teste do farmaceutico, trata como
-        # orientacao do farmaceutico para o ultimo cliente transferido
+        # orientacao do farmaceutico para o ultimo cliente transferido.
+        # Nesse fluxo, o farmaceutico conversa DIRETAMENTE com o cliente pelo
+        # proprio celular (fora do sistema) e so manda mensagem para este
+        # numero quando quiser devolver o atendimento, com o resumo do que
+        # foi recomendado escrito junto com o comando /voltarbot.
         if numero_e_farmaceutico_teste(number):
             texto_farmaceutico = extrair_texto(msg) or ""
             alvo = ultimo_cliente_transferido
@@ -281,8 +300,14 @@ def webhook():
             if "/voltarbot" in texto_farmaceutico.lower():
                 if alvo:
                     resumo_lista = mensagens_farmaceutico.get(alvo, [])
+                    resumo_inline = extrair_resumo_apos_comando(texto_farmaceutico)
+                    partes_resumo = []
                     if resumo_lista:
-                        resumo_texto = " ".join(resumo_lista)
+                        partes_resumo.append(" ".join(resumo_lista))
+                    if resumo_inline:
+                        partes_resumo.append(resumo_inline)
+                    resumo_texto = " ".join(partes_resumo).strip()
+                    if resumo_texto:
                         if alvo not in historico:
                             historico[alvo] = []
                         historico[alvo].append({
@@ -293,18 +318,13 @@ def webhook():
                                 "considerando esse produto recomendado, sem perguntar novamente qual e o sintoma."
                             )
                         })
-                        mensagens_farmaceutico[alvo] = []
+                    mensagens_farmaceutico[alvo] = []
                     transferido[alvo] = False
-                    print(f"[TESTE] CONVERSA DEVOLVIDA PARA ISABELA: {alvo} | RESUMO: {resumo_lista}")
+                    print(f"[TESTE] CONVERSA DEVOLVIDA PARA ISABELA: {alvo} | RESUMO: {resumo_texto}")
             else:
                 if alvo and transferido.get(alvo) and texto_farmaceutico.strip():
                     mensagens_farmaceutico.setdefault(alvo, []).append(texto_farmaceutico.strip())
                     print(f"[TESTE] MENSAGEM DO FARMACEUTICO GUARDADA PARA {alvo}: {texto_farmaceutico.strip()}")
-                    # Encaminha a mensagem do farmaceutico direto para o cliente
-                    # (necessario no teste, pois e um numero separado do cliente;
-                    # quando o numero oficial da farmacia estiver conectado, o
-                    # farmaceutico ja fala direto com o cliente e isso nao e preciso)
-                    send(alvo, texto_farmaceutico.strip())
 
             return "ok", 200
 
