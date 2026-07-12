@@ -300,6 +300,11 @@ def webhook():
                 if alvo and transferido.get(alvo) and texto_farmaceutico.strip():
                     mensagens_farmaceutico.setdefault(alvo, []).append(texto_farmaceutico.strip())
                     print(f"[TESTE] MENSAGEM DO FARMACEUTICO GUARDADA PARA {alvo}: {texto_farmaceutico.strip()}")
+                    # Encaminha a mensagem do farmaceutico direto para o cliente
+                    # (necessario no teste, pois e um numero separado do cliente;
+                    # quando o numero oficial da farmacia estiver conectado, o
+                    # farmaceutico ja fala direto com o cliente e isso nao e preciso)
+                    send(alvo, texto_farmaceutico.strip())
 
             return "ok", 200
 
