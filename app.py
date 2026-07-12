@@ -1,6 +1,7 @@
 from flask import Flask, request
 import requests
 import os
+import re
 from datetime import datetime
 import pytz
 
@@ -236,6 +237,33 @@ def limpar_numero(valor):
     return valor.replace("@s.whatsapp.net", "").replace("@lid", "")
 
 
+encerrado = {}
+
+PALAVRAS_DESPEDIDA = [
+    "obrigad", "valeu", "vlw", "tchau", "ate mais", "ate logo", "de nada",
+    "por nada", "certeza", "beleza", "blz", "flw", "otimo", "otima",
+    "perfeito", "perfeita", "show", "top",
+]
+
+
+def normalizar_texto(texto):
+    t = texto.lower()
+    t = re.sub(r"[^\w\s]", "", t)
+    return t.strip()
+
+
+def e_mensagem_de_despedida(texto):
+    """Reconhece agradecimentos/despedidas curtas para nao ficar respondendo
+    a toa depois que o atendimento ja foi encerrado."""
+    norm = normalizar_texto(texto)
+    if not norm or len(norm) > 25:
+        return False
+    for p in PALAVRAS_DESPEDIDA:
+        if p in norm:
+            return True
+    return False
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     global ultimo_cliente_transferido
@@ -404,6 +432,13 @@ def webhook():
         if not text:
             return "ok", 200
 
+        if number and encerrado.get(number):
+            if e_mensagem_de_despedida(text):
+                print(f"[SILENCIO] Despedida ignorada apos encerramento para {number}: {text}")
+                return "ok", 200
+            else:
+                encerrado[number] = False
+
         reply = ask_openai(number, text)
         if reply:
             if "TRANSFERIR_FARMACEUTICO" in reply:
@@ -425,6 +460,9 @@ def webhook():
                 send(FARMACEUTICO_TESTE, resumo_para_farmaceutico)
             else:
                 send(number, reply)
+                if "Foi um prazer te atender" in reply:
+                    encerrado[number] = True
+                    print(f"CONVERSA ENCERRADA (aguardando so despedidas): {number}")
 
     except Exception as e:
         print("ERROR:", e)
