@@ -92,6 +92,9 @@ Nao escreva mais nada alem dessas palavras quando isso acontecer.
 
 Isso e DIFERENTE de quando o cliente ja sabe o nome do medicamento e so quer saber preco ou disponibilidade (exemplo: "voces tem dipirona?", "quanto custa o paracetamol?") - nesses casos, responda normalmente com a tabela de precos.
 
+QUANDO VOCE RECEBER DE VOLTA UMA CONVERSA QUE JA FOI ORIENTADA PELO FARMACEUTICO:
+Se a mensagem do sistema informar o que o farmaceutico orientou, continue o atendimento a partir dali, seguindo o FLUXO DE PEDIDO OBRIGATORIO abaixo, considerando o produto que foi recomendado. Nao pergunte de novo qual e o sintoma nem sugira outro produto - use exatamente o que o farmaceutico indicou.
+
 FLUXO DE PEDIDO OBRIGATORIO:
 Quando o cliente quiser comprar, siga SEMPRE esta ordem:
 1. Confirme o produto e o preco
@@ -127,6 +130,7 @@ REGRAS OBRIGATORIAS:
 historico = {}
 mensagens_processadas = set()
 transferido = {}
+mensagens_farmaceutico = {}
 
 
 def get_saudacao():
@@ -141,7 +145,6 @@ def get_saudacao():
 
 
 def baixar_audio(url):
-    """Tenta baixar audio com e sem token da UAZAPI"""
     headers_list = [
         {"token": TOKEN},
         {},
@@ -158,7 +161,6 @@ def baixar_audio(url):
 
 
 def transcrever_audio(audio_bytes):
-    """Tenta transcrever audio com diferentes formatos aceitos pelo Whisper"""
     h = {"Authorization": "Bearer " + KEY}
     data = {"model": "whisper-1", "language": "pt"}
     formatos = [
@@ -185,7 +187,6 @@ def transcrever_audio(audio_bytes):
 
 
 def extrair_texto(msg):
-    """Extrai o texto da mensagem, tratando o caso do content vir como dicionario"""
     texto_direto = msg.get("text")
     if isinstance(texto_direto, str) and texto_direto.strip():
         return texto_direto
@@ -218,21 +219,37 @@ def webhook():
         is_from_me = msg.get("wasSentByApi") or msg.get("fromMe")
 
         if is_from_me:
-            # Quando a mensagem e enviada pela propria farmacia (farmaceutico),
-            # o numero do CLIENTE vem do chatid, e nao do sender_pn
-            # (sender_pn nesse caso e o numero da propria farmacia)
             number = limpar_numero(msg.get("chatid"))
             if not number:
                 number = limpar_numero(chat.get("wa_chatid"))
 
             texto_fromme = extrair_texto(msg) or ""
+
             if "/voltarbot" in texto_fromme.lower():
                 if number:
+                    resumo_lista = mensagens_farmaceutico.get(number, [])
+                    if resumo_lista:
+                        resumo_texto = " ".join(resumo_lista)
+                        if number not in historico:
+                            historico[number] = []
+                        historico[number].append({
+                            "role": "system",
+                            "content": (
+                                f"O farmaceutico orientou o cliente da seguinte forma: \"{resumo_texto}\". "
+                                "Continue o atendimento a partir daqui, seguindo o FLUXO DE PEDIDO OBRIGATORIO "
+                                "considerando esse produto recomendado, sem perguntar novamente qual e o sintoma."
+                            )
+                        })
+                        mensagens_farmaceutico[number] = []
                     transferido[number] = False
-                    print(f"CONVERSA DEVOLVIDA PARA ISABELA: {number}")
+                    print(f"CONVERSA DEVOLVIDA PARA ISABELA: {number} | RESUMO: {resumo_lista}")
+            else:
+                if number and transferido.get(number) and texto_fromme.strip():
+                    mensagens_farmaceutico.setdefault(number, []).append(texto_fromme.strip())
+                    print(f"MENSAGEM DO FARMACEUTICO GUARDADA: {number} -> {texto_fromme.strip()}")
+
             return "ok", 200
 
-        # Mensagem do cliente: o numero dele vem do sender_pn
         number = limpar_numero(msg.get("sender_pn"))
         if not number:
             number = limpar_numero(chat.get("wa_chatid"))
@@ -311,6 +328,7 @@ def webhook():
         if reply:
             if "TRANSFERIR_FARMACEUTICO" in reply:
                 transferido[number] = True
+                mensagens_farmaceutico[number] = []
                 print(f"CONVERSA TRANSFERIDA PARA FARMACEUTICO: {number}")
                 send(number, "Vou te conectar com nosso farmaceutico para te orientar melhor sobre isso, so um momento! 😊")
             else:
@@ -345,7 +363,7 @@ def ask_openai(number, text):
     else:
         instrucao = SYSTEM_PROMPT + " Esta NAO e a primeira mensagem. NAO se apresente. Responda diretamente."
 
-    messages = [{"role": "system", "content": instrucao}] + historico[number][-10:]
+    messages = [{"role": "system", "content": instrucao}] + historico[number][-12:]
 
     h = {"Authorization": "Bearer " + KEY, "Content-Type": "application/json"}
     b = {"model": "gpt-4o-mini", "messages": messages}
