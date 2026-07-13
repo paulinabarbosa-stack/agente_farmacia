@@ -364,15 +364,19 @@ def registrar_conversa(number, mensagem, resposta, transferida=False, motivo=Non
 
 
 def extrair_dados_venda(number):
-    """Pede pra IA extrair produto/quantidade/valor da conversa que acabou de fechar."""
+    """Pede pra IA extrair produto/quantidade/valor/nome/endereco/forma de
+    pagamento da conversa que acabou de fechar."""
     if number not in historico:
         return None
 
     instrucao = (
-        "Baseado na conversa abaixo, extraia os dados da venda que acabou de ser fechada. "
+        "Baseado na conversa abaixo, extraia os dados do pedido que acabou de ser fechado. "
         "Responda APENAS em JSON puro, sem nenhum texto adicional, exatamente neste formato: "
-        '{"produto": "nome do produto", "quantidade": 1, "valor_unitario": 0.00}. '
-        'Se nao conseguir identificar com certeza, responda {"produto": null}.'
+        '{"produto": "nome do produto", "quantidade": 1, "valor_unitario": 0.00, '
+        '"nome_cliente": "nome completo informado", "endereco": "endereco completo informado", '
+        '"forma_pagamento": "Pix, cartao de credito, cartao de debito ou dinheiro"}. '
+        'Se nao conseguir identificar o produto com certeza, responda {"produto": null}. '
+        'Para os demais campos, se nao encontrar a informacao na conversa, use null.'
     )
     messages = [{"role": "system", "content": instrucao}] + historico[number][-14:]
 
@@ -493,6 +497,41 @@ def registrar_venda(number, produto, quantidade, valor_unitario, unidade_id=None
         print("VENDA REGISTRADA:", r.status_code, r.text)
     except Exception as e:
         print("ERRO ao registrar venda:", e)
+
+
+def criar_pedido(number, dados_venda, unidade_id=None):
+    """Cria o registro do pedido de entrega no Supabase, ja vinculado a
+    loja escolhida, logo apos a venda ser fechada pela Isabela. O campo
+    itens segue o formato ja usado no sistema: [{"qtd": N, "produto": "X"}]."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        return
+    try:
+        quantidade_num = int(round(float(dados_venda.get("quantidade") or 1)))
+        valor_unitario = float(dados_venda.get("valor_unitario") or 0)
+        valor_total = round(quantidade_num * valor_unitario, 2)
+        produto_nome = dados_venda.get("produto")
+
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "cliente_telefone": number,
+            "itens": [{"qtd": quantidade_num, "produto": produto_nome}],
+            "valor_total": valor_total,
+            "forma_pagamento": dados_venda.get("forma_pagamento"),
+            "status": "pendente",
+            "nome_cliente": dados_venda.get("nome_cliente"),
+            "endereco": dados_venda.get("endereco"),
+        }
+        if unidade_id:
+            body["unidade_id"] = unidade_id
+
+        r = requests.post(f"{SUPABASE_URL}/rest/v1/pedidos", json=body, headers=headers, timeout=15)
+        print("PEDIDO CRIADO:", r.status_code, r.text)
+    except Exception as e:
+        print("ERRO ao criar pedido:", e)
 
 
 def formatar_hora_br(iso_str):
@@ -812,6 +851,7 @@ def webhook():
                             dados_venda.get("valor_unitario", 0),
                             unidade_id=unidade_id,
                         )
+                        criar_pedido(number, dados_venda, unidade_id=unidade_id)
 
     except Exception as e:
         print("ERROR:", e)
