@@ -430,10 +430,11 @@ def buscar_produto_por_nome(nome_produto):
 
 
 def escolher_loja_para_produto(produto_id):
-    """Consulta a tabela estoque_lojas e escolhe, entre as lojas que tem
-    estoque disponivel (quantidade > 0) para o produto, a de maior
-    prioridade (menor numero em ordem_prioridade). Retorna o unidade_id
-    escolhido, ou None se nenhuma loja tiver estoque."""
+    """Consulta a tabela estoque (estoque real por loja, ja existente no
+    sistema) e escolhe, entre as lojas que tem estoque disponivel
+    (quantidade > 0) para o produto, a de maior prioridade (menor numero
+    em ordem_prioridade). Retorna o unidade_id escolhido, ou None se
+    nenhuma loja tiver estoque."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY or not produto_id:
         return None
     try:
@@ -445,7 +446,7 @@ def escolher_loja_para_produto(produto_id):
             f"produto_id=eq.{produto_id}&quantidade=gt.0"
             f"&select=unidade_id,quantidade,unidades(nome,ordem_prioridade)"
         )
-        r = requests.get(f"{SUPABASE_URL}/rest/v1/estoque_lojas?{params}", headers=headers, timeout=15)
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/estoque?{params}", headers=headers, timeout=15)
         dados = r.json()
         if not dados:
             print(f"AVISO: nenhuma loja com estoque disponivel para produto_id={produto_id}")
