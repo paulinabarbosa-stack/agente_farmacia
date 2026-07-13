@@ -5,7 +5,7 @@ import re
 import json
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 app = Flask(__name__)
@@ -628,6 +628,129 @@ def verificar_seguimentos():
         time.sleep(30)
 
 
+# ---- LEMBRETE DE RECOMPRA (medicamentos de uso continuo) ----
+
+DIAS_ANTECEDENCIA_LEMBRETE = 3  # manda o lembrete X dias antes da previsao de acabar
+
+
+def buscar_vendas_uso_continuo():
+    """Busca vendas de produtos marcados como uso continuo, com a duracao
+    estimada cadastrada, para calcular quando o cliente deve estar
+    precisando comprar de novo."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        return []
+    try:
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+        }
+        params = (
+            "select=id,cliente_telefone,produto_id,data_venda,quantidade,"
+            "produtos!inner(nome,uso_continuo,dias_duracao_estimados)"
+            "&produtos.uso_continuo=eq.true"
+        )
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/vendas?{params}", headers=headers, timeout=15)
+        dados = r.json()
+        if isinstance(dados, list):
+            return dados
+        return []
+    except Exception as e:
+        print("ERRO ao buscar vendas de uso continuo:", e)
+        return []
+
+
+def ja_foi_lembrado(venda_id):
+    """Verifica se ja foi enviado um lembrete de recompra para essa venda,
+    para nunca mandar o mesmo lembrete duas vezes."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY or not venda_id:
+        return True
+    try:
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+        }
+        params = f"venda_id=eq.{venda_id}&select=id&limit=1"
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/lembretes_recompra?{params}", headers=headers, timeout=15)
+        dados = r.json()
+        return bool(dados)
+    except Exception as e:
+        print("ERRO ao verificar lembrete existente:", e)
+        return True
+
+
+def registrar_lembrete_enviado(cliente_telefone, produto_id, venda_id):
+    """Registra que o lembrete foi enviado, para nao duplicar no futuro."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        return
+    try:
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "cliente_telefone": cliente_telefone,
+            "produto_id": produto_id,
+            "venda_id": venda_id,
+        }
+        requests.post(f"{SUPABASE_URL}/rest/v1/lembretes_recompra", json=body, headers=headers, timeout=15)
+    except Exception as e:
+        print("ERRO ao registrar lembrete de recompra:", e)
+
+
+def verificar_lembretes_recompra():
+    """Roda periodicamente (a cada 6 horas) verificando quais clientes
+    devem estar terminando um medicamento de uso continuo, e manda um
+    lembrete automatico pelo WhatsApp, sem duplicar."""
+    while True:
+        try:
+            hoje = datetime.now(pytz.timezone("America/Sao_Paulo")).date()
+            vendas = buscar_vendas_uso_continuo()
+
+            for venda in vendas:
+                produto_info = venda.get("produtos") or {}
+                dias_duracao = produto_info.get("dias_duracao_estimados")
+                if not dias_duracao:
+                    continue
+
+                data_venda_str = venda.get("data_venda", "")
+                try:
+                    data_venda = datetime.fromisoformat(data_venda_str.replace("Z", "+00:00"))
+                except Exception:
+                    continue
+
+                data_venda_sp = data_venda.astimezone(pytz.timezone("America/Sao_Paulo")).date()
+                data_prevista_recompra = data_venda_sp + timedelta(days=int(dias_duracao))
+                data_envio_lembrete = data_prevista_recompra - timedelta(days=DIAS_ANTECEDENCIA_LEMBRETE)
+
+                if hoje < data_envio_lembrete or hoje > data_prevista_recompra:
+                    continue
+
+                venda_id = venda.get("id")
+                if ja_foi_lembrado(venda_id):
+                    continue
+
+                cliente_telefone = venda.get("cliente_telefone")
+                produto_id = venda.get("produto_id")
+                nome_produto = produto_info.get("nome", "seu medicamento")
+
+                if not cliente_telefone:
+                    continue
+
+                mensagem = (
+                    f"Oi! Passando para lembrar que seu {nome_produto} deve estar acabando em breve. "
+                    f"Quer que eu já separe uma nova caixa para você? 😊"
+                )
+                send(cliente_telefone, mensagem)
+                registrar_lembrete_enviado(cliente_telefone, produto_id, venda_id)
+                print(f"[LEMBRETE RECOMPRA] Enviado para {cliente_telefone} - {nome_produto}")
+
+        except Exception as e:
+            print("ERRO no verificador de lembretes de recompra:", e)
+
+        time.sleep(6 * 60 * 60)
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     global ultimo_cliente_transferido
@@ -971,9 +1094,10 @@ def send(number, text):
         print("ERRO ao enviar mensagem:", e)
 
 
-# Inicia o verificador de follow-up em segundo plano assim que o app carrega
+# Inicia os verificadores em segundo plano assim que o app carrega
 # (funciona tanto rodando localmente quanto no Railway/gunicorn)
 threading.Thread(target=verificar_seguimentos, daemon=True).start()
+threading.Thread(target=verificar_lembretes_recompra, daemon=True).start()
 
 
 if __name__ == "__main__":
