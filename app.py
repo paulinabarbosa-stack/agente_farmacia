@@ -397,9 +397,75 @@ def extrair_dados_venda(number):
         return None
 
 
-def registrar_venda(number, produto, quantidade, valor_unitario):
-    """Grava no Supabase a venda fechada pela Isabela (sem unidade vinculada,
-    para medir separadamente o quanto a IA vende sozinha)."""
+def buscar_produto_por_nome(nome_produto):
+    """Tenta encontrar o produto correspondente na tabela produtos, usando
+    busca aproximada pela primeira palavra do nome (ja que o nome dito pelo
+    cliente/IA pode nao bater 100% com o nome cadastrado no banco, ex:
+    'Dipirona' vs 'Dipirona Sodica 500mg 20cp'). Retorna o id do produto,
+    ou None se nao encontrar nada."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY or not nome_produto:
+        return None
+    try:
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+        }
+        primeira_palavra = nome_produto.strip().split(" ")[0]
+        if not primeira_palavra:
+            return None
+        params = f"nome=ilike.*{primeira_palavra}*&select=id,nome&limit=5"
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/produtos?{params}", headers=headers, timeout=15)
+        dados = r.json()
+        if not dados:
+            print(f"AVISO: nenhum produto encontrado no banco para '{nome_produto}'")
+            return None
+        return dados[0]["id"]
+    except Exception as e:
+        print("ERRO ao buscar produto por nome:", e)
+        return None
+
+
+def escolher_loja_para_produto(produto_id):
+    """Consulta a tabela estoque_lojas e escolhe, entre as lojas que tem
+    estoque disponivel (quantidade > 0) para o produto, a de maior
+    prioridade (menor numero em ordem_prioridade). Retorna o unidade_id
+    escolhido, ou None se nenhuma loja tiver estoque."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY or not produto_id:
+        return None
+    try:
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+        }
+        params = (
+            f"produto_id=eq.{produto_id}&quantidade=gt.0"
+            f"&select=unidade_id,quantidade,unidades(nome,ordem_prioridade)"
+        )
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/estoque_lojas?{params}", headers=headers, timeout=15)
+        dados = r.json()
+        if not dados:
+            print(f"AVISO: nenhuma loja com estoque disponivel para produto_id={produto_id}")
+            return None
+
+        def chave_prioridade(item):
+            unidade = item.get("unidades") or {}
+            valor = unidade.get("ordem_prioridade")
+            return valor if valor is not None else 999
+
+        dados.sort(key=chave_prioridade)
+        escolhido = dados[0]
+        nome_loja = (escolhido.get("unidades") or {}).get("nome", "desconhecida")
+        print(f"LOJA ESCOLHIDA para produto_id={produto_id}: {nome_loja}")
+        return escolhido["unidade_id"]
+    except Exception as e:
+        print("ERRO ao escolher loja para produto:", e)
+        return None
+
+
+def registrar_venda(number, produto, quantidade, valor_unitario, unidade_id=None):
+    """Grava no Supabase a venda fechada pela Isabela. Quando a loja de
+    origem e identificada (produto encontrado no banco + estoque
+    disponivel em alguma loja), grava tambem o unidade_id correspondente."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return
     try:
@@ -420,6 +486,9 @@ def registrar_venda(number, produto, quantidade, valor_unitario):
             "origem": "whatsapp",
             "cliente_telefone": number,
         }
+        if unidade_id:
+            body["unidade_id"] = unidade_id
+
         r = requests.post(f"{SUPABASE_URL}/rest/v1/vendas", json=body, headers=headers, timeout=15)
         print("VENDA REGISTRADA:", r.status_code, r.text)
     except Exception as e:
@@ -734,11 +803,14 @@ def webhook():
                     print(f"CONVERSA ENCERRADA (aguardando so despedidas): {number}")
                     dados_venda = extrair_dados_venda(number)
                     if dados_venda:
+                        produto_id = buscar_produto_por_nome(dados_venda.get("produto"))
+                        unidade_id = escolher_loja_para_produto(produto_id) if produto_id else None
                         registrar_venda(
                             number,
                             dados_venda.get("produto"),
                             dados_venda.get("quantidade", 1),
                             dados_venda.get("valor_unitario", 0),
+                            unidade_id=unidade_id,
                         )
 
     except Exception as e:
