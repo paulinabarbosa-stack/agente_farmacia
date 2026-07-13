@@ -638,6 +638,7 @@ def buscar_vendas_uso_continuo():
     estimada cadastrada, para calcular quando o cliente deve estar
     precisando comprar de novo."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        print("[DEBUG LEMBRETE] SUPABASE_URL ou SUPABASE_ANON_KEY nao configurados")
         return []
     try:
         headers = {
@@ -650,6 +651,8 @@ def buscar_vendas_uso_continuo():
             "&produtos.uso_continuo=eq.true"
         )
         r = requests.get(f"{SUPABASE_URL}/rest/v1/vendas?{params}", headers=headers, timeout=15)
+        print(f"[DEBUG LEMBRETE] Status da consulta: {r.status_code}")
+        print(f"[DEBUG LEMBRETE] Resposta: {r.text[:1000]}")
         dados = r.json()
         if isinstance(dados, list):
             return dados
@@ -705,11 +708,14 @@ def verificar_lembretes_recompra():
     while True:
         try:
             hoje = datetime.now(pytz.timezone("America/Sao_Paulo")).date()
+            print(f"[DEBUG LEMBRETE] Verificacao iniciada. Hoje: {hoje}")
             vendas = buscar_vendas_uso_continuo()
+            print(f"[DEBUG LEMBRETE] Vendas encontradas: {len(vendas)}")
 
             for venda in vendas:
                 produto_info = venda.get("produtos") or {}
                 dias_duracao = produto_info.get("dias_duracao_estimados")
+                print(f"[DEBUG LEMBRETE] Venda {venda.get('id')} - produto: {produto_info.get('nome')} - dias_duracao: {dias_duracao}")
                 if not dias_duracao:
                     continue
 
@@ -722,8 +728,10 @@ def verificar_lembretes_recompra():
                 data_venda_sp = data_venda.astimezone(pytz.timezone("America/Sao_Paulo")).date()
                 data_prevista_recompra = data_venda_sp + timedelta(days=int(dias_duracao))
                 data_envio_lembrete = data_prevista_recompra - timedelta(days=DIAS_ANTECEDENCIA_LEMBRETE)
+                print(f"[DEBUG LEMBRETE] data_venda: {data_venda_sp} | previsao: {data_prevista_recompra} | envia a partir de: {data_envio_lembrete}")
 
                 if hoje < data_envio_lembrete or hoje > data_prevista_recompra:
+                    print("[DEBUG LEMBRETE] Fora da janela de envio, pulando.")
                     continue
 
                 venda_id = venda.get("id")
