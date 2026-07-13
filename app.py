@@ -467,10 +467,12 @@ def escolher_loja_para_produto(produto_id):
         return None
 
 
-def registrar_venda(number, produto, quantidade, valor_unitario, unidade_id=None):
+def registrar_venda(number, produto, quantidade, valor_unitario, unidade_id=None, produto_id=None):
     """Grava no Supabase a venda fechada pela Isabela. Quando a loja de
     origem e identificada (produto encontrado no banco + estoque
-    disponivel em alguma loja), grava tambem o unidade_id correspondente."""
+    disponivel em alguma loja), grava tambem o unidade_id correspondente.
+    Grava tambem produto_id quando encontrado, para permitir relatorios
+    precisos de categoria/custo/margem no futuro."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return
     try:
@@ -493,6 +495,8 @@ def registrar_venda(number, produto, quantidade, valor_unitario, unidade_id=None
         }
         if unidade_id:
             body["unidade_id"] = unidade_id
+        if produto_id:
+            body["produto_id"] = produto_id
 
         r = requests.post(f"{SUPABASE_URL}/rest/v1/vendas", json=body, headers=headers, timeout=15)
         print("VENDA REGISTRADA:", r.status_code, r.text)
@@ -851,6 +855,7 @@ def webhook():
                             dados_venda.get("quantidade", 1),
                             dados_venda.get("valor_unitario", 0),
                             unidade_id=unidade_id,
+                            produto_id=produto_id,
                         )
                         criar_pedido(number, dados_venda, unidade_id=unidade_id)
 
