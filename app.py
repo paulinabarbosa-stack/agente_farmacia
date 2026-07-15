@@ -196,8 +196,6 @@ def get_saudacao():
 
 
 def baixar_audio(url):
-    """Baixa qualquer arquivo de midia do UAZAPI (audio, imagem etc), tentando
-    primeiro com o token e depois sem, ja que o comportamento pode variar."""
     headers_list = [
         {"token": TOKEN},
         {},
@@ -256,10 +254,6 @@ def extrair_texto(msg):
 
 
 def extrair_url_midia(msg):
-    """Extrai a URL de download de uma midia a partir do payload do UAZAPI.
-    Usado apenas como fallback para audio; para imagens, o caminho principal
-    e a funcao baixar_midia_uazapi(), que usa o endpoint oficial
-    /message/download (evita o link criptografado direto do WhatsApp)."""
     content = msg.get("content")
     url = None
     if isinstance(content, dict):
@@ -276,12 +270,6 @@ def extrair_url_midia(msg):
 
 
 def baixar_midia_uazapi(message_id):
-    """Usa o endpoint oficial da UAZAPI (/message/download) para baixar uma
-    midia (imagem, audio etc) ja decodificada, a partir do ID completo da
-    mensagem (formato owner:messageid, que e o proprio msg['id']). Isso evita
-    lidar com o link criptografado direto do WhatsApp (mmg.whatsapp.net), que
-    nao funciona como arquivo de verdade sem decodificacao. Retorna os bytes
-    do arquivo, ou None se falhar."""
     if not BASE or not TOKEN or not message_id:
         return None
     try:
@@ -292,7 +280,7 @@ def baixar_midia_uazapi(message_id):
         if r.status_code != 200:
             print("ERRO message/download:", r.text[:300])
             return None
-       resultado = r.json()
+        resultado = r.json()
         base64_data = (
             resultado.get("base64Data")
             or resultado.get("base64")
@@ -463,8 +451,6 @@ def extrair_dados_venda(number):
 
 
 def extrair_dados_receita(image_bytes):
-    """Usa a IA de visao para ler a foto da receita e extrair os dados
-    necessarios para o lancamento posterior no SNGPC (via HOS)."""
     try:
         b64 = base64.b64encode(image_bytes).decode("utf-8")
         instrucao = (
@@ -501,8 +487,6 @@ def extrair_dados_receita(image_bytes):
 
 
 def subir_foto_receita(image_bytes, number):
-    """Envia a foto da receita para o bucket 'receitas' no Supabase Storage
-    e retorna a URL publica da imagem, ou None se falhar."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return None
     try:
@@ -527,8 +511,6 @@ def subir_foto_receita(image_bytes, number):
 
 
 def salvar_receita_pendente(number, dados_venda, dados_receita, foto_url):
-    """Grava no Supabase o registro da receita aguardando aprovacao do
-    farmaceutico, com os dados do pedido e os dados extraidos da receita."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return
     try:
@@ -560,9 +542,6 @@ def salvar_receita_pendente(number, dados_venda, dados_receita, foto_url):
 
 
 def notificar_farmaceutico_receita_pendente(number, dados_venda):
-    """Manda um aviso curto para o farmaceutico (sem a foto, para nao lotar
-    o WhatsApp dele) informando que ha uma receita nova aguardando revisao
-    no sistema."""
     produto = dados_venda.get("produto", "medicamento controlado")
     mensagem = (
         f"📋 Nova receita aguardando aprovacao!\n"
