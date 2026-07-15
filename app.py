@@ -451,15 +451,30 @@ def extrair_dados_venda(number):
 
 
 def extrair_dados_receita(image_bytes):
+    """Usa a IA de visao para ler a foto da receita e extrair os dados
+    necessarios para o lancamento posterior no SNGPC (via HOS). O prompt e
+    rigoroso de proposito: a IA NAO pode adivinhar ou usar dados de outras
+    partes da conversa, apenas o que estiver escrito de forma legivel na
+    propria imagem, para evitar alucinacao (inventar nome de paciente etc)."""
     try:
         b64 = base64.b64encode(image_bytes).decode("utf-8")
         instrucao = (
-            "Extraia da imagem desta receita medica os dados abaixo. Responda APENAS em JSON puro, "
-            "sem nenhum texto adicional, exatamente neste formato: "
-            '{"data_receita": "DD/MM/AAAA ou null", "nome_paciente": "nome completo ou null", '
+            "Voce esta analisando a foto de um documento que pode ou nao ser uma receita medica de verdade. "
+            "Sua tarefa e EXTRAIR APENAS o que estiver escrito de forma clara e legivel NA PROPRIA IMAGEM. "
+            "REGRAS OBRIGATORIAS, SEM EXCECAO: "
+            "1. NUNCA infira, adivinhe ou reutilize nomes, datas ou numeros vindos de qualquer outra fonte "
+            "que nao seja o texto visivel na imagem. "
+            "2. Se a imagem NAO for uma receita medica (por exemplo, for outro tipo de documento, foto, "
+            "anotacao ou papel qualquer), retorne null em TODOS os campos. "
+            "3. Se um campo nao estiver escrito com clareza na imagem, retorne null para aquele campo "
+            "especifico - nunca invente ou complete com suposicoes. "
+            "4. Nomes de pessoas so podem ser preenchidos se estiverem escritos literalmente na imagem, "
+            "associados claramente a um campo tipo 'Paciente:', 'Nome:' ou similar. "
+            "Responda APENAS em JSON puro, sem nenhum texto adicional, exatamente neste formato: "
+            '{"e_receita_medica": true ou false, "data_receita": "DD/MM/AAAA ou null", '
+            '"nome_paciente": "nome completo ou null", '
             '"sexo_paciente": "M, F ou null", "idade_paciente": "idade em anos ou null", '
-            '"registro_profissional": "numero e sigla do CRM/CRO/CRMV/RMS de quem prescreveu ou null"}. '
-            "Se nao conseguir ler algum campo com clareza, use null nesse campo."
+            '"registro_profissional": "numero e sigla do CRM/CRO/CRMV/RMS de quem prescreveu ou null"}.'
         )
         messages = [
             {
@@ -480,7 +495,11 @@ def extrair_dados_receita(image_bytes):
         resultado = r.json()
         conteudo = resultado["choices"][0]["message"]["content"].strip()
         conteudo = re.sub(r"^```json|^```|```$", "", conteudo, flags=re.MULTILINE).strip()
-        return json.loads(conteudo)
+        dados = json.loads(conteudo)
+        for chave, valor in list(dados.items()):
+            if isinstance(valor, str) and valor.strip().lower() == "null":
+                dados[chave] = None
+        return dados
     except Exception as e:
         print("ERRO ao extrair dados da receita:", e)
         return {}
@@ -939,11 +958,15 @@ def aprovar_receita_endpoint():
 
         mensagem_aprovado = (
             "Boas notícias! Sua receita foi aprovada pelo nosso farmacêutico e "
-            "já estamos providenciando a entrega do seu pedido. Qualquer novidade, "
-            "te aviso por aqui! 😊"
+            "seu pedido foi registrado - a entrega já está sendo providenciada! "
+            "Foi um prazer te atender! 😊\n\n"
+            "Que tal deixar uma avaliação para nos ajudar a melhorar?\n"
+            "⭐ Farmacia Saude e Vida: https://search.google.com/local/writereview?placeid=ChIJAQBsTgC5rgARK0oiw3CQOpg\n\n"
+            "Obrigada pela preferência! Volte sempre. 💙"
         )
         send(number, mensagem_aprovado)
         registrar_conversa(number, "[Receita aprovada pelo farmaceutico]", mensagem_aprovado)
+        encerrado[number] = True
 
         return com_cors({"ok": True})
     except Exception as e:
