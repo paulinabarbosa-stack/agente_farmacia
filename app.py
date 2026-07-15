@@ -292,9 +292,10 @@ def baixar_midia_uazapi(message_id):
         if r.status_code != 200:
             print("ERRO message/download:", r.text[:300])
             return None
-        resultado = r.json()
+       resultado = r.json()
         base64_data = (
-            resultado.get("base64")
+            resultado.get("base64Data")
+            or resultado.get("base64")
             or resultado.get("data")
             or resultado.get("fileBase64")
             or resultado.get("file")
