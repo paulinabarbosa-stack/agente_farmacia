@@ -148,16 +148,9 @@ mensagens_processadas = set()
 transferido = {}
 mensagens_farmaceutico = {}
 
-# Numero de teste usado como "farmaceutico" enquanto o numero oficial
-# da farmacia ainda nao esta conectado. Remover/ajustar quando a farmacia
-# tiver seu proprio numero conectado (nesse caso o farmaceutico so precisa
-# responder direto na conversa do cliente pelo WhatsApp oficial).
 FARMACEUTICO_TESTE = "5538998552537"
 ultimo_cliente_transferido = None
 
-# Lista de palavras-chave (em minusculas) para identificar produtos
-# controlados, com base na tabela de precos. Usada para decidir quando
-# exigir foto da receita antes de fechar a venda.
 CONTROLADOS_PALAVRAS_CHAVE = [
     "amoxicilina", "azitromicina", "cefalexina",
     "yasmin", "diane", "microvlar", "mercilon", "ciclo 21",
@@ -166,14 +159,10 @@ CONTROLADOS_PALAVRAS_CHAVE = [
     "ritalina", "venvanse", "concerta",
 ]
 
-# Guarda, por numero de cliente, os dados da venda ja confirmada que estao
-# aguardando a foto da receita antes de serem liberados.
 aguardando_receita = {}
 
 
 def eh_controlado(nome_produto):
-    """Verifica se o produto identificado na venda e um dos que exigem
-    receita medica, com base na lista de palavras-chave acima."""
     if not nome_produto:
         return False
     nome = nome_produto.lower()
@@ -267,20 +256,20 @@ def extrair_texto(msg):
 
 def extrair_url_midia(msg):
     """Extrai a URL de download de uma midia (audio ou imagem) a partir do
-    payload do UAZAPI, reaproveitando os mesmos formatos ja usados no audio."""
+    payload do UAZAPI. Prioriza o proxy da propria UAZAPI (que entrega o
+    arquivo ja decodificado), evitando o link direto do WhatsApp, que vem
+    criptografado e nao funciona como imagem/audio de verdade."""
+    direct_path = msg.get("directPath", "")
+    if direct_path:
+        return BASE + "/proxy/media?path=" + direct_path
+
     content = msg.get("content")
-    url = None
     if isinstance(content, dict):
-        url = content.get("URL") or content.get("url")
+        return content.get("URL") or content.get("url")
     elif isinstance(content, str) and content.startswith("http"):
-        url = content
+        return content
 
-    if not url:
-        direct_path = msg.get("directPath", "")
-        if direct_path:
-            url = BASE + "/proxy/media?path=" + direct_path
-
-    return url
+    return None
 
 
 def limpar_numero(valor):
