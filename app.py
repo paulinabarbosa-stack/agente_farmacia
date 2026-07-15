@@ -1,4 +1,4 @@
-from flask import Flask, request
+from flask import Flask, request, jsonify, make_response
 import requests
 import os
 import re
@@ -874,6 +874,81 @@ def verificar_lembretes_recompra():
             print("ERRO no verificador de lembretes de recompra:", e)
 
         time.sleep(6 * 60 * 60)
+
+
+@app.route("/aprovar-receita", methods=["POST", "OPTIONS"])
+def aprovar_receita_endpoint():
+    if request.method == "OPTIONS":
+        resp = make_response()
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return resp
+
+    def com_cors(resposta_json, status=200):
+        resp = jsonify(resposta_json)
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.status_code = status
+        return resp
+
+    try:
+        data = request.json or {}
+        receita_id = data.get("id")
+        if not receita_id:
+            return com_cors({"erro": "id da receita e obrigatorio"}, 400)
+
+        if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+            return com_cors({"erro": "Supabase nao configurado"}, 500)
+
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+        }
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/receitas_pendentes?id=eq.{receita_id}&select=*",
+            headers=headers, timeout=15
+        )
+        registros = r.json()
+        if not registros:
+            return com_cors({"erro": "receita nao encontrada"}, 404)
+
+        receita = registros[0]
+        number = receita.get("cliente_telefone")
+
+        dados_venda = {
+            "produto": receita.get("produto"),
+            "quantidade": receita.get("quantidade", 1),
+            "valor_unitario": receita.get("valor_unitario", 0),
+            "nome_cliente": receita.get("nome_cliente"),
+            "endereco": receita.get("endereco"),
+            "forma_pagamento": receita.get("forma_pagamento"),
+        }
+
+        produto_id = buscar_produto_por_nome(dados_venda.get("produto"))
+        unidade_id = escolher_loja_para_produto(produto_id) if produto_id else None
+
+        registrar_venda(
+            number,
+            dados_venda.get("produto"),
+            dados_venda.get("quantidade", 1),
+            dados_venda.get("valor_unitario", 0),
+            unidade_id=unidade_id,
+            produto_id=produto_id,
+        )
+        criar_pedido(number, dados_venda, unidade_id=unidade_id)
+
+        mensagem_aprovado = (
+            "Boas notícias! Sua receita foi aprovada pelo nosso farmacêutico e "
+            "já estamos providenciando a entrega do seu pedido. Qualquer novidade, "
+            "te aviso por aqui! 😊"
+        )
+        send(number, mensagem_aprovado)
+        registrar_conversa(number, "[Receita aprovada pelo farmaceutico]", mensagem_aprovado)
+
+        return com_cors({"ok": True})
+    except Exception as e:
+        print("ERRO ao aprovar receita:", e)
+        return com_cors({"erro": str(e)}, 500)
 
 
 @app.route("/webhook", methods=["POST"])
