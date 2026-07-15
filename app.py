@@ -3,6 +3,7 @@ import requests
 import os
 import re
 import json
+import base64
 import threading
 import time
 from datetime import datetime, timedelta
@@ -154,6 +155,30 @@ mensagens_farmaceutico = {}
 FARMACEUTICO_TESTE = "5538998552537"
 ultimo_cliente_transferido = None
 
+# Lista de palavras-chave (em minusculas) para identificar produtos
+# controlados, com base na tabela de precos. Usada para decidir quando
+# exigir foto da receita antes de fechar a venda.
+CONTROLADOS_PALAVRAS_CHAVE = [
+    "amoxicilina", "azitromicina", "cefalexina",
+    "yasmin", "diane", "microvlar", "mercilon", "ciclo 21",
+    "losartana", "enalapril", "anlodipino", "hidroclorotiazida",
+    "clonazepam", "alprazolam", "escitalopram", "sertralina",
+    "ritalina", "venvanse", "concerta",
+]
+
+# Guarda, por numero de cliente, os dados da venda ja confirmada que estao
+# aguardando a foto da receita antes de serem liberados.
+aguardando_receita = {}
+
+
+def eh_controlado(nome_produto):
+    """Verifica se o produto identificado na venda e um dos que exigem
+    receita medica, com base na lista de palavras-chave acima."""
+    if not nome_produto:
+        return False
+    nome = nome_produto.lower()
+    return any(palavra in nome for palavra in CONTROLADOS_PALAVRAS_CHAVE)
+
 
 def numero_e_farmaceutico_teste(number):
     apenas_digitos = "".join(c for c in (number or "") if c.isdigit())
@@ -164,8 +189,6 @@ def numero_e_farmaceutico_teste(number):
 
 
 def extrair_resumo_apos_comando(texto):
-    """Se o farmaceutico escrever, por exemplo,
-    '/voltarbot Recomendei Dipirona 500mg', retorna 'Recomendei Dipirona 500mg'."""
     idx = texto.lower().find("/voltarbot")
     if idx == -1:
         return ""
@@ -184,6 +207,7 @@ def get_saudacao():
 
 
 def baixar_audio(url):
+    """Baixa qualquer arquivo de midia do UAZAPI (audio, imagem etc)."""
     headers_list = [
         {"token": TOKEN},
         {},
@@ -241,6 +265,24 @@ def extrair_texto(msg):
     return None
 
 
+def extrair_url_midia(msg):
+    """Extrai a URL de download de uma midia (audio ou imagem) a partir do
+    payload do UAZAPI, reaproveitando os mesmos formatos ja usados no audio."""
+    content = msg.get("content")
+    url = None
+    if isinstance(content, dict):
+        url = content.get("URL") or content.get("url")
+    elif isinstance(content, str) and content.startswith("http"):
+        url = content
+
+    if not url:
+        direct_path = msg.get("directPath", "")
+        if direct_path:
+            url = BASE + "/proxy/media?path=" + direct_path
+
+    return url
+
+
 def limpar_numero(valor):
     if not isinstance(valor, str):
         return ""
@@ -263,8 +305,6 @@ def normalizar_texto(texto):
 
 
 def e_mensagem_de_despedida(texto):
-    """Reconhece agradecimentos/despedidas curtas para nao ficar respondendo
-    a toa depois que o atendimento ja foi encerrado."""
     norm = normalizar_texto(texto)
     if not norm or len(norm) > 25:
         return False
@@ -274,11 +314,9 @@ def e_mensagem_de_despedida(texto):
     return False
 
 
-# ---- FOLLOW-UP AUTOMATICO (Bloco 1) ----
-
-ultima_mensagem_cliente = {}   # number -> datetime da ultima mensagem do cliente
-estagios_enviados = {}         # number -> set de estagios ja enviados ("5min", "30min", "1h")
-seguimento_pendente_id = {}    # number -> id do seguimento aguardando resposta do cliente
+ultima_mensagem_cliente = {}
+estagios_enviados = {}
+seguimento_pendente_id = {}
 
 ESTAGIOS_FOLLOWUP = [
     ("5min", 5, "Oi! Ainda esta por ai? Fico a disposicao se quiser continuar seu pedido 😊"),
@@ -288,7 +326,6 @@ ESTAGIOS_FOLLOWUP = [
 
 
 def registrar_seguimento(number, estagio, mensagem):
-    """Salva no Supabase que um follow-up foi enviado. Retorna o id criado, ou None se falhar."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return None
     try:
@@ -317,7 +354,6 @@ def registrar_seguimento(number, estagio, mensagem):
 
 
 def marcar_seguimento_respondido(number):
-    """Quando o cliente volta a responder, marca o ultimo seguimento pendente como respondido."""
     seguimento_id = seguimento_pendente_id.get(number)
     if not seguimento_id or not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return
@@ -341,7 +377,6 @@ def marcar_seguimento_respondido(number):
 
 
 def registrar_conversa(number, mensagem, resposta, transferida=False, motivo=None):
-    """Grava no Supabase cada troca real entre o cliente e a Isabela."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return
     try:
@@ -364,8 +399,6 @@ def registrar_conversa(number, mensagem, resposta, transferida=False, motivo=Non
 
 
 def extrair_dados_venda(number):
-    """Pede pra IA extrair produto/quantidade/valor/nome/endereco/forma de
-    pagamento da conversa que acabou de fechar."""
     if number not in historico:
         return None
 
@@ -401,12 +434,118 @@ def extrair_dados_venda(number):
         return None
 
 
+def extrair_dados_receita(image_bytes):
+    """Usa a IA de visao para ler a foto da receita e extrair os dados
+    necessarios para o lancamento posterior no SNGPC (via HOS)."""
+    try:
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        instrucao = (
+            "Extraia da imagem desta receita medica os dados abaixo. Responda APENAS em JSON puro, "
+            "sem nenhum texto adicional, exatamente neste formato: "
+            '{"data_receita": "DD/MM/AAAA ou null", "nome_paciente": "nome completo ou null", '
+            '"sexo_paciente": "M, F ou null", "idade_paciente": "idade em anos ou null", '
+            '"registro_profissional": "numero e sigla do CRM/CRO/CRMV/RMS de quem prescreveu ou null"}. '
+            "Se nao conseguir ler algum campo com clareza, use null nesse campo."
+        )
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": instrucao},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                ],
+            }
+        ]
+        h = {"Authorization": "Bearer " + KEY, "Content-Type": "application/json"}
+        b = {"model": "gpt-4o-mini", "messages": messages}
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            json=b, headers=h, timeout=30
+        )
+        r.raise_for_status()
+        resultado = r.json()
+        conteudo = resultado["choices"][0]["message"]["content"].strip()
+        conteudo = re.sub(r"^```json|^```|```$", "", conteudo, flags=re.MULTILINE).strip()
+        return json.loads(conteudo)
+    except Exception as e:
+        print("ERRO ao extrair dados da receita:", e)
+        return {}
+
+
+def subir_foto_receita(image_bytes, number):
+    """Envia a foto da receita para o bucket 'receitas' no Supabase Storage
+    e retorna a URL publica da imagem, ou None se falhar."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        return None
+    try:
+        timestamp = int(time.time())
+        filename = f"{number}_{timestamp}.jpg"
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Content-Type": "image/jpeg",
+        }
+        r = requests.post(
+            f"{SUPABASE_URL}/storage/v1/object/receitas/{filename}",
+            headers=headers, data=image_bytes, timeout=30
+        )
+        if r.status_code in (200, 201):
+            return f"{SUPABASE_URL}/storage/v1/object/public/receitas/{filename}"
+        print("ERRO upload receita:", r.status_code, r.text)
+        return None
+    except Exception as e:
+        print("ERRO ao subir foto da receita:", e)
+        return None
+
+
+def salvar_receita_pendente(number, dados_venda, dados_receita, foto_url):
+    """Grava no Supabase o registro da receita aguardando aprovacao do
+    farmaceutico, com os dados do pedido e os dados extraidos da receita."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        return
+    try:
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "cliente_telefone": number,
+            "produto": dados_venda.get("produto"),
+            "quantidade": dados_venda.get("quantidade", 1),
+            "valor_unitario": dados_venda.get("valor_unitario", 0),
+            "nome_cliente": dados_venda.get("nome_cliente"),
+            "endereco": dados_venda.get("endereco"),
+            "forma_pagamento": dados_venda.get("forma_pagamento"),
+            "foto_receita_url": foto_url,
+            "data_receita_extraida": dados_receita.get("data_receita"),
+            "nome_paciente": dados_receita.get("nome_paciente"),
+            "sexo_paciente": dados_receita.get("sexo_paciente"),
+            "idade_paciente": dados_receita.get("idade_paciente"),
+            "registro_profissional": dados_receita.get("registro_profissional"),
+            "status": "pendente",
+        }
+        r = requests.post(f"{SUPABASE_URL}/rest/v1/receitas_pendentes", json=body, headers=headers, timeout=15)
+        print("RECEITA PENDENTE SALVA:", r.status_code, r.text)
+    except Exception as e:
+        print("ERRO ao salvar receita pendente:", e)
+
+
+def notificar_farmaceutico_receita_pendente(number, dados_venda):
+    """Manda um aviso curto para o farmaceutico (sem a foto, para nao lotar
+    o WhatsApp dele) informando que ha uma receita nova aguardando revisao
+    no sistema."""
+    produto = dados_venda.get("produto", "medicamento controlado")
+    mensagem = (
+        f"📋 Nova receita aguardando aprovacao!\n"
+        f"Produto: {produto}\n"
+        f"Cliente: {number}\n"
+        f"Acesse o VidaFarma, na aba Receitas Pendentes, para revisar a foto e aprovar ou recusar."
+    )
+    send(FARMACEUTICO_TESTE, mensagem)
+
+
 def buscar_produto_por_nome(nome_produto):
-    """Tenta encontrar o produto correspondente na tabela produtos, usando
-    busca aproximada pela primeira palavra do nome (ja que o nome dito pelo
-    cliente/IA pode nao bater 100% com o nome cadastrado no banco, ex:
-    'Dipirona' vs 'Dipirona Sodica 500mg 20cp'). Retorna o id do produto,
-    ou None se nao encontrar nada."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY or not nome_produto:
         return None
     try:
@@ -430,11 +569,6 @@ def buscar_produto_por_nome(nome_produto):
 
 
 def escolher_loja_para_produto(produto_id):
-    """Consulta a tabela estoque (estoque real por loja, ja existente no
-    sistema) e escolhe, entre as lojas que tem estoque disponivel
-    (quantidade > 0) para o produto, a de maior prioridade (menor numero
-    em ordem_prioridade). Retorna o unidade_id escolhido, ou None se
-    nenhuma loja tiver estoque."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY or not produto_id:
         return None
     try:
@@ -468,11 +602,6 @@ def escolher_loja_para_produto(produto_id):
 
 
 def registrar_venda(number, produto, quantidade, valor_unitario, unidade_id=None, produto_id=None):
-    """Grava no Supabase a venda fechada pela Isabela. Quando a loja de
-    origem e identificada (produto encontrado no banco + estoque
-    disponivel em alguma loja), grava tambem o unidade_id correspondente.
-    Grava tambem produto_id quando encontrado, para permitir relatorios
-    precisos de categoria/custo/margem no futuro."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return
     try:
@@ -505,9 +634,6 @@ def registrar_venda(number, produto, quantidade, valor_unitario, unidade_id=None
 
 
 def criar_pedido(number, dados_venda, unidade_id=None):
-    """Cria o registro do pedido de entrega no Supabase, ja vinculado a
-    loja escolhida, logo apos a venda ser fechada pela Isabela. O campo
-    itens segue o formato ja usado no sistema: [{"qtd": N, "produto": "X"}]."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return
     try:
@@ -540,7 +666,6 @@ def criar_pedido(number, dados_venda, unidade_id=None):
 
 
 def formatar_hora_br(iso_str):
-    """Converte um timestamp ISO do Supabase para horario de Brasilia (HH:MM)."""
     try:
         texto = iso_str.replace("Z", "+00:00")
         dt = datetime.fromisoformat(texto)
@@ -562,8 +687,6 @@ MAPA_STATUS_ENTREGA = {
 
 
 def consultar_status_entrega(number):
-    """Busca no Supabase o pedido mais recente do cliente e monta uma
-    resposta com o status real (a IA nunca inventa esse dado)."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return "No momento nao consigo consultar o status da sua entrega. Tente novamente em instantes."
     try:
@@ -596,8 +719,6 @@ def consultar_status_entrega(number):
 
 
 def verificar_seguimentos():
-    """Roda em segundo plano, verificando periodicamente quais clientes
-    pararam de responder e enviando o follow-up no estagio certo."""
     while True:
         try:
             agora = datetime.now(pytz.timezone("America/Sao_Paulo"))
@@ -628,15 +749,10 @@ def verificar_seguimentos():
         time.sleep(30)
 
 
-# ---- LEMBRETE DE RECOMPRA (medicamentos de uso continuo) ----
-
-DIAS_ANTECEDENCIA_LEMBRETE = 3  # manda o lembrete X dias antes da previsao de acabar
+DIAS_ANTECEDENCIA_LEMBRETE = 3
 
 
 def buscar_vendas_uso_continuo():
-    """Busca vendas de produtos marcados como uso continuo, com a duracao
-    estimada cadastrada, para calcular quando o cliente deve estar
-    precisando comprar de novo."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         print("[DEBUG LEMBRETE] SUPABASE_URL ou SUPABASE_ANON_KEY nao configurados")
         return []
@@ -663,8 +779,6 @@ def buscar_vendas_uso_continuo():
 
 
 def ja_foi_lembrado(venda_id):
-    """Verifica se ja foi enviado um lembrete de recompra para essa venda,
-    para nunca mandar o mesmo lembrete duas vezes."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY or not venda_id:
         return True
     try:
@@ -682,7 +796,6 @@ def ja_foi_lembrado(venda_id):
 
 
 def registrar_lembrete_enviado(cliente_telefone, produto_id, venda_id):
-    """Registra que o lembrete foi enviado, para nao duplicar no futuro."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return
     try:
@@ -702,9 +815,6 @@ def registrar_lembrete_enviado(cliente_telefone, produto_id, venda_id):
 
 
 def verificar_lembretes_recompra():
-    """Roda periodicamente (a cada 6 horas) verificando quais clientes
-    devem estar terminando um medicamento de uso continuo, e manda um
-    lembrete automatico pelo WhatsApp, sem duplicar."""
     while True:
         try:
             hoje = datetime.now(pytz.timezone("America/Sao_Paulo")).date()
@@ -816,12 +926,6 @@ def webhook():
         if not number:
             number = limpar_numero(msg.get("chatid"))
 
-        # Se a mensagem veio do numero de teste do farmaceutico, trata como
-        # orientacao do farmaceutico para o ultimo cliente transferido.
-        # Nesse fluxo, o farmaceutico conversa DIRETAMENTE com o cliente pelo
-        # proprio celular (fora do sistema) e so manda mensagem para este
-        # numero quando quiser devolver o atendimento, com o resumo do que
-        # foi recomendado escrito junto com o comando /voltarbot.
         if numero_e_farmaceutico_teste(number):
             texto_farmaceutico = extrair_texto(msg) or ""
             alvo = ultimo_cliente_transferido
@@ -882,23 +986,42 @@ def webhook():
             mimetype.startswith("audio")
         )
 
-        print(f"TYPE:{msg_type} MEDIA:{media_type} PTT:{is_ptt} IS_AUDIO:{is_audio}")
+        is_image = (
+            msg_type in ("image",) or
+            media_type == "image" or
+            mimetype.startswith("image")
+        )
+
+        print(f"TYPE:{msg_type} MEDIA:{media_type} PTT:{is_ptt} IS_AUDIO:{is_audio} IS_IMAGE:{is_image}")
+
+        if is_image and number in aguardando_receita:
+            image_url = extrair_url_midia(msg)
+            image_bytes = baixar_audio(image_url) if image_url else None
+
+            if image_bytes:
+                dados_venda = aguardando_receita.pop(number)
+                dados_receita = extrair_dados_receita(image_bytes) or {}
+                foto_url = subir_foto_receita(image_bytes, number)
+                salvar_receita_pendente(number, dados_venda, dados_receita, foto_url)
+
+                mensagem_confirmacao = (
+                    "Recebemos sua receita! Ela sera analisada pelo nosso farmaceutico responsavel, "
+                    "e assim que for aprovada, ja providenciamos a entrega. Te aviso por aqui assim que "
+                    "tiver novidade! 😊"
+                )
+                send(number, mensagem_confirmacao)
+                registrar_conversa(number, "[Foto da receita recebida]", mensagem_confirmacao)
+                notificar_farmaceutico_receita_pendente(number, dados_venda)
+                encerrado[number] = True
+            else:
+                send(number, "Nao consegui acessar a foto da receita. Pode tentar enviar novamente?")
+
+            return "ok", 200
 
         text = None
 
         if is_audio:
-            content = msg.get("content")
-            audio_url = None
-            if isinstance(content, dict):
-                audio_url = content.get("URL") or content.get("url")
-            elif isinstance(content, str) and content.startswith("http"):
-                audio_url = content
-
-            if not audio_url:
-                direct_path = msg.get("directPath", "")
-                if direct_path:
-                    audio_url = BASE + "/proxy/media?path=" + direct_path
-
+            audio_url = extrair_url_midia(msg)
             print("AUDIO URL:", audio_url)
 
             if audio_url:
@@ -914,6 +1037,8 @@ def webhook():
             else:
                 send(number, "Desculpe, nao consegui acessar o audio. Pode digitar sua mensagem?")
                 return "ok", 200
+        elif is_image:
+            return "ok", 200
         else:
             text = extrair_texto(msg) or chat.get("wa_lastMessageTextVote")
 
@@ -934,8 +1059,6 @@ def webhook():
             else:
                 encerrado[number] = False
 
-        # Cliente esta ativo: reinicia o contador do follow-up e marca
-        # como respondido qualquer seguimento que estivesse pendente
         if number:
             marcar_seguimento_respondido(number)
             ultima_mensagem_cliente[number] = datetime.now(pytz.timezone("America/Sao_Paulo"))
@@ -970,13 +1093,22 @@ def webhook():
                 mensagem_status = consultar_status_entrega(number)
                 send(number, mensagem_status)
                 registrar_conversa(number, text, mensagem_status)
-            else:
-                send(number, reply)
-                registrar_conversa(number, text, reply)
-                if "Foi um prazer te atender" in reply:
+            elif "Foi um prazer te atender" in reply:
+                dados_venda = extrair_dados_venda(number)
+
+                if dados_venda and eh_controlado(dados_venda.get("produto")):
+                    aguardando_receita[number] = dados_venda
+                    mensagem_receita = (
+                        "Para finalizar a compra desse medicamento, preciso que voce me envie uma foto "
+                        "da receita medica, por favor! 📋"
+                    )
+                    send(number, mensagem_receita)
+                    registrar_conversa(number, text, mensagem_receita)
+                else:
+                    send(number, reply)
+                    registrar_conversa(number, text, reply)
                     encerrado[number] = True
                     print(f"CONVERSA ENCERRADA (aguardando so despedidas): {number}")
-                    dados_venda = extrair_dados_venda(number)
                     if dados_venda:
                         produto_id = buscar_produto_por_nome(dados_venda.get("produto"))
                         unidade_id = escolher_loja_para_produto(produto_id) if produto_id else None
@@ -989,6 +1121,9 @@ def webhook():
                             produto_id=produto_id,
                         )
                         criar_pedido(number, dados_venda, unidade_id=unidade_id)
+            else:
+                send(number, reply)
+                registrar_conversa(number, text, reply)
 
     except Exception as e:
         print("ERROR:", e)
@@ -1052,9 +1187,6 @@ def ask_openai(number, text):
 
 
 def oferecer_produto_proativamente(number):
-    """Chamada logo apos o farmaceutico devolver o atendimento (/voltarbot).
-    Faz a Isabela oferecer o produto recomendado, com preco, sem esperar
-    o cliente falar antes."""
     if number not in historico:
         historico[number] = []
 
@@ -1102,8 +1234,6 @@ def send(number, text):
         print("ERRO ao enviar mensagem:", e)
 
 
-# Inicia os verificadores em segundo plano assim que o app carrega
-# (funciona tanto rodando localmente quanto no Railway/gunicorn)
 threading.Thread(target=verificar_seguimentos, daemon=True).start()
 threading.Thread(target=verificar_lembretes_recompra, daemon=True).start()
 
