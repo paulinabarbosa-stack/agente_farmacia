@@ -196,7 +196,8 @@ def get_saudacao():
 
 
 def baixar_audio(url):
-    """Baixa qualquer arquivo de midia do UAZAPI (audio, imagem etc)."""
+    """Baixa qualquer arquivo de midia do UAZAPI (audio, imagem etc), tentando
+    primeiro com o token e depois sem, ja que o comportamento pode variar."""
     headers_list = [
         {"token": TOKEN},
         {},
@@ -255,21 +256,58 @@ def extrair_texto(msg):
 
 
 def extrair_url_midia(msg):
-    """Extrai a URL de download de uma midia (audio ou imagem) a partir do
-    payload do UAZAPI. Prioriza o proxy da propria UAZAPI (que entrega o
-    arquivo ja decodificado), evitando o link direto do WhatsApp, que vem
-    criptografado e nao funciona como imagem/audio de verdade."""
-    direct_path = msg.get("directPath", "")
-    if direct_path:
-        return BASE + "/proxy/media?path=" + direct_path
-
+    """Extrai a URL de download de uma midia a partir do payload do UAZAPI.
+    Usado apenas como fallback para audio; para imagens, o caminho principal
+    e a funcao baixar_midia_uazapi(), que usa o endpoint oficial
+    /message/download (evita o link criptografado direto do WhatsApp)."""
     content = msg.get("content")
+    url = None
     if isinstance(content, dict):
-        return content.get("URL") or content.get("url")
+        url = content.get("URL") or content.get("url")
     elif isinstance(content, str) and content.startswith("http"):
-        return content
+        url = content
 
-    return None
+    if not url:
+        direct_path = msg.get("directPath", "")
+        if direct_path:
+            url = BASE + "/proxy/media?path=" + direct_path
+
+    return url
+
+
+def baixar_midia_uazapi(message_id):
+    """Usa o endpoint oficial da UAZAPI (/message/download) para baixar uma
+    midia (imagem, audio etc) ja decodificada, a partir do ID completo da
+    mensagem (formato owner:messageid, que e o proprio msg['id']). Isso evita
+    lidar com o link criptografado direto do WhatsApp (mmg.whatsapp.net), que
+    nao funciona como arquivo de verdade sem decodificacao. Retorna os bytes
+    do arquivo, ou None se falhar."""
+    if not BASE or not TOKEN or not message_id:
+        return None
+    try:
+        headers = {"token": TOKEN, "Content-Type": "application/json"}
+        body = {"id": message_id, "return_base64": True}
+        r = requests.post(f"{BASE}/message/download", json=body, headers=headers, timeout=30)
+        print(f"MESSAGE DOWNLOAD STATUS:{r.status_code}")
+        if r.status_code != 200:
+            print("ERRO message/download:", r.text[:300])
+            return None
+        resultado = r.json()
+        base64_data = (
+            resultado.get("base64")
+            or resultado.get("data")
+            or resultado.get("fileBase64")
+            or resultado.get("file")
+        )
+        if not base64_data:
+            print("AVISO: resposta de message/download sem base64:", str(resultado)[:300])
+            return None
+        if isinstance(base64_data, str) and base64_data.startswith("data:") and "," in base64_data:
+            base64_data = base64_data.split(",", 1)[1]
+        return base64.b64decode(base64_data)
+    except Exception as e:
+        print("ERRO ao baixar midia via message/download:", e)
+        return None
 
 
 def limpar_numero(valor):
@@ -984,8 +1022,8 @@ def webhook():
         print(f"TYPE:{msg_type} MEDIA:{media_type} PTT:{is_ptt} IS_AUDIO:{is_audio} IS_IMAGE:{is_image}")
 
         if is_image and number in aguardando_receita:
-            image_url = extrair_url_midia(msg)
-            image_bytes = baixar_audio(image_url) if image_url else None
+            message_id_completo = msg.get("id", "")
+            image_bytes = baixar_midia_uazapi(message_id_completo) if message_id_completo else None
 
             if image_bytes:
                 dados_venda = aguardando_receita.pop(number)
