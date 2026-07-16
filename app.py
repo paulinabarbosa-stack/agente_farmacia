@@ -160,9 +160,75 @@ CONTROLADOS_PALAVRAS_CHAVE = [
 ]
 
 aguardando_receita = {}
+aguardando_oferta_complementar = {}
+
+TABELA_PRECOS = {
+    "dipirona 500mg (20 comp)": 8.90,
+    "paracetamol 750mg (20 comp)": 9.90,
+    "ibuprofeno 600mg (20 comp)": 18.90,
+    "aspirina 500mg (20 comp)": 12.90,
+    "resfenol (16 caps)": 22.90,
+    "coristina d (16 comp)": 19.90,
+    "benegrip (20 comp)": 17.90,
+    "neosoro spray nasal": 14.90,
+    "nimesulida 100mg (20 comp)": 16.90,
+    "diclofenaco 50mg (20 comp)": 14.90,
+    "dorflex (30 comp)": 24.90,
+    "cataflan 50mg (20 comp)": 28.90,
+    "amoxicilina 500mg (21 caps)": 18.90,
+    "azitromicina 500mg (3 comp)": 22.90,
+    "cefalexina 500mg (20 caps)": 19.90,
+    "amoxicilina + clavulanato 875mg (14 comp)": 49.90,
+    "yasmin (21 comp)": 39.90,
+    "diane 35 (21 comp)": 34.90,
+    "microvlar (21 comp)": 19.90,
+    "mercilon (21 comp)": 44.90,
+    "ciclo 21 (21 comp)": 16.90,
+    "losartana 50mg (30 comp)": 14.90,
+    "enalapril 10mg (30 comp)": 12.90,
+    "anlodipino 5mg (30 comp)": 13.90,
+    "hidroclorotiazida 25mg (30 comp)": 9.90,
+    "clonazepam 2mg (30 comp)": 19.90,
+    "alprazolam 0,5mg (30 comp)": 18.90,
+    "escitalopram 10mg (30 comp)": 29.90,
+    "sertralina 50mg (30 comp)": 24.90,
+    "ritalina 10mg (30 comp)": 89.90,
+    "ritalina la 20mg (30 caps)": 129.90,
+    "venvanse 30mg (28 caps)": 189.90,
+    "concerta 36mg (30 comp)": 219.90,
+    "vitamina c 1g (30 comp)": 19.90,
+    "vitamina d 2000ui (30 caps)": 24.90,
+    "complexo b (30 comp)": 16.90,
+    "zinco + vitamina c (30 comp)": 22.90,
+    "centrum (30 comp)": 49.90,
+    "protetor solar fps 50 (120ml)": 39.90,
+    "shampoo anticaspa (400ml)": 29.90,
+    "creme hidratante corporal (400ml)": 34.90,
+    "fio dental (50m)": 7.90,
+    "escova dental": 12.90,
+}
+
+
+def buscar_preco_por_nome(nome_produto):
+    """Busca o preco de referencia de um produto pelo nome, comparando com a
+    tabela de precos usada pela Isabela. Usado para saber quanto cobrar pelo
+    produto complementar sugerido, sem precisar consultar o banco."""
+    if not nome_produto:
+        return None
+    nome = nome_produto.lower()
+    for chave, preco in TABELA_PRECOS.items():
+        if chave in nome or nome in chave:
+            return preco
+    primeira_palavra = nome.split(" ")[0]
+    for chave, preco in TABELA_PRECOS.items():
+        if chave.startswith(primeira_palavra):
+            return preco
+    return None
 
 
 def eh_controlado(nome_produto):
+    """Verifica se o produto identificado na venda e um dos que exigem
+    receita medica, com base na lista de palavras-chave acima."""
     if not nome_produto:
         return False
     nome = nome_produto.lower()
@@ -178,6 +244,8 @@ def numero_e_farmaceutico_teste(number):
 
 
 def extrair_resumo_apos_comando(texto):
+    """Se o farmaceutico escrever, por exemplo,
+    '/voltarbot Recomendei Dipirona 500mg', retorna 'Recomendei Dipirona 500mg'."""
     idx = texto.lower().find("/voltarbot")
     if idx == -1:
         return ""
@@ -196,6 +264,8 @@ def get_saudacao():
 
 
 def baixar_audio(url):
+    """Baixa qualquer arquivo de midia do UAZAPI (audio, imagem etc), tentando
+    primeiro com o token e depois sem, ja que o comportamento pode variar."""
     headers_list = [
         {"token": TOKEN},
         {},
@@ -254,6 +324,10 @@ def extrair_texto(msg):
 
 
 def extrair_url_midia(msg):
+    """Extrai a URL de download de uma midia a partir do payload do UAZAPI.
+    Usado apenas como fallback para audio; para imagens, o caminho principal
+    e a funcao baixar_midia_uazapi(), que usa o endpoint oficial
+    /message/download (evita o link criptografado direto do WhatsApp)."""
     content = msg.get("content")
     url = None
     if isinstance(content, dict):
@@ -270,6 +344,12 @@ def extrair_url_midia(msg):
 
 
 def baixar_midia_uazapi(message_id):
+    """Usa o endpoint oficial da UAZAPI (/message/download) para baixar uma
+    midia (imagem, audio etc) ja decodificada, a partir do ID completo da
+    mensagem (formato owner:messageid, que e o proprio msg['id']). Isso evita
+    lidar com o link criptografado direto do WhatsApp (mmg.whatsapp.net), que
+    nao funciona como arquivo de verdade sem decodificacao. Retorna os bytes
+    do arquivo, ou None se falhar."""
     if not BASE or not TOKEN or not message_id:
         return None
     try:
@@ -321,10 +401,30 @@ def normalizar_texto(texto):
 
 
 def e_mensagem_de_despedida(texto):
+    """Reconhece agradecimentos/despedidas curtas para nao ficar respondendo
+    a toa depois que o atendimento ja foi encerrado."""
     norm = normalizar_texto(texto)
     if not norm or len(norm) > 25:
         return False
     for p in PALAVRAS_DESPEDIDA:
+        if p in norm:
+            return True
+    return False
+
+
+PALAVRAS_AFIRMATIVAS = [
+    "sim", "quero", "pode", "claro", "aceito", "adiciona", "vou querer",
+    "uhum", "bora", "manda", "perfeito", "com certeza", "isso", "positivo",
+]
+
+
+def e_resposta_afirmativa(texto):
+    """Reconhece uma resposta afirmativa curta (usado para saber se o
+    cliente aceitou a oferta de produto complementar)."""
+    norm = normalizar_texto(texto)
+    if not norm:
+        return False
+    for p in PALAVRAS_AFIRMATIVAS:
         if p in norm:
             return True
     return False
@@ -506,6 +606,8 @@ def extrair_dados_receita(image_bytes):
 
 
 def subir_foto_receita(image_bytes, number):
+    """Envia a foto da receita para o bucket 'receitas' no Supabase Storage
+    e retorna a URL publica da imagem, ou None se falhar."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return None
     try:
@@ -530,6 +632,8 @@ def subir_foto_receita(image_bytes, number):
 
 
 def salvar_receita_pendente(number, dados_venda, dados_receita, foto_url):
+    """Grava no Supabase o registro da receita aguardando aprovacao do
+    farmaceutico, com os dados do pedido e os dados extraidos da receita."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return
     try:
@@ -561,6 +665,9 @@ def salvar_receita_pendente(number, dados_venda, dados_receita, foto_url):
 
 
 def notificar_farmaceutico_receita_pendente(number, dados_venda):
+    """Manda um aviso curto para o farmaceutico (sem a foto, para nao lotar
+    o WhatsApp dele) informando que ha uma receita nova aguardando revisao
+    no sistema."""
     produto = dados_venda.get("produto", "medicamento controlado")
     mensagem = (
         f"📋 Nova receita aguardando aprovacao!\n"
@@ -571,7 +678,45 @@ def notificar_farmaceutico_receita_pendente(number, dados_venda):
     send(FARMACEUTICO_TESTE, mensagem)
 
 
+def buscar_produto_complementar(produto_id):
+    """Busca na tabela produtos_associados se existe algum produto marcado
+    como 'complementar' para o produto informado (usado para a Isabela
+    oferecer um item extra na hora de fechar a venda, tipo 'leva tambem').
+    Retorna {"id", "nome", "preco"} ou None se nao houver associacao."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY or not produto_id:
+        return None
+    try:
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+        }
+        params = f"produto_id=eq.{produto_id}&tipo=eq.complementar&select=produto_associado_id&limit=1"
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/produtos_associados?{params}", headers=headers, timeout=15)
+        dados = r.json()
+        if not dados:
+            return None
+        associado_id = dados[0].get("produto_associado_id")
+        if not associado_id:
+            return None
+        params2 = f"id=eq.{associado_id}&select=nome&limit=1"
+        r2 = requests.get(f"{SUPABASE_URL}/rest/v1/produtos?{params2}", headers=headers, timeout=15)
+        produtos = r2.json()
+        if not produtos:
+            return None
+        nome = produtos[0].get("nome")
+        preco = buscar_preco_por_nome(nome)
+        return {"id": associado_id, "nome": nome, "preco": preco}
+    except Exception as e:
+        print("ERRO ao buscar produto complementar:", e)
+        return None
+
+
 def buscar_produto_por_nome(nome_produto):
+    """Tenta encontrar o produto correspondente na tabela produtos, usando
+    busca aproximada pela primeira palavra do nome (ja que o nome dito pelo
+    cliente/IA pode nao bater 100% com o nome cadastrado no banco, ex:
+    'Dipirona' vs 'Dipirona Sodica 500mg 20cp'). Retorna o id do produto,
+    ou None se nao encontrar nada."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY or not nome_produto:
         return None
     try:
@@ -595,6 +740,11 @@ def buscar_produto_por_nome(nome_produto):
 
 
 def escolher_loja_para_produto(produto_id):
+    """Consulta a tabela estoque (estoque real por loja, ja existente no
+    sistema) e escolhe, entre as lojas que tem estoque disponivel
+    (quantidade > 0) para o produto, a de maior prioridade (menor numero
+    em ordem_prioridade). Retorna o unidade_id escolhido, ou None se
+    nenhuma loja tiver estoque."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY or not produto_id:
         return None
     try:
@@ -628,6 +778,11 @@ def escolher_loja_para_produto(produto_id):
 
 
 def registrar_venda(number, produto, quantidade, valor_unitario, unidade_id=None, produto_id=None):
+    """Grava no Supabase a venda fechada pela Isabela. Quando a loja de
+    origem e identificada (produto encontrado no banco + estoque
+    disponivel em alguma loja), grava tambem o unidade_id correspondente.
+    Grava tambem produto_id quando encontrado, para permitir relatorios
+    precisos de categoria/custo/margem no futuro."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return
     try:
@@ -660,6 +815,9 @@ def registrar_venda(number, produto, quantidade, valor_unitario, unidade_id=None
 
 
 def criar_pedido(number, dados_venda, unidade_id=None):
+    """Cria o registro do pedido de entrega no Supabase, ja vinculado a
+    loja escolhida, logo apos a venda ser fechada pela Isabela. O campo
+    itens segue o formato ja usado no sistema: [{"qtd": N, "produto": "X"}]."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return
     try:
@@ -691,7 +849,38 @@ def criar_pedido(number, dados_venda, unidade_id=None):
         print("ERRO ao criar pedido:", e)
 
 
+def criar_pedido_com_itens(number, nome_cliente, endereco, forma_pagamento, itens, valor_total, unidade_id=None):
+    """Igual a criar_pedido, mas aceita uma lista de itens e um valor total
+    ja calculados - usado quando o cliente aceita levar tambem um produto
+    complementar junto com a compra original."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        return
+    try:
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "cliente_telefone": number,
+            "itens": itens,
+            "valor_total": valor_total,
+            "forma_pagamento": forma_pagamento,
+            "status": "pendente",
+            "nome_cliente": nome_cliente,
+            "endereco": endereco,
+        }
+        if unidade_id:
+            body["unidade_id"] = unidade_id
+
+        r = requests.post(f"{SUPABASE_URL}/rest/v1/pedidos", json=body, headers=headers, timeout=15)
+        print("PEDIDO CRIADO (com itens):", r.status_code, r.text)
+    except Exception as e:
+        print("ERRO ao criar pedido com itens:", e)
+
+
 def formatar_hora_br(iso_str):
+    """Converte um timestamp ISO do Supabase para horario de Brasilia (HH:MM)."""
     try:
         texto = iso_str.replace("Z", "+00:00")
         dt = datetime.fromisoformat(texto)
@@ -1157,6 +1346,66 @@ def webhook():
         if not text:
             return "ok", 200
 
+        if number in aguardando_oferta_complementar:
+            oferta = aguardando_oferta_complementar.pop(number)
+            dados_venda_original = oferta["dados_venda"]
+            produto_id_original = oferta["produto_id"]
+            complementar = oferta["complementar"]
+
+            aceitou = e_resposta_afirmativa(text)
+
+            unidade_id = escolher_loja_para_produto(produto_id_original) if produto_id_original else None
+
+            quantidade_original = dados_venda_original.get("quantidade", 1)
+            valor_unit_original = dados_venda_original.get("valor_unitario", 0)
+            valor_total_pedido = round(float(quantidade_original) * float(valor_unit_original), 2)
+
+            registrar_venda(
+                number,
+                dados_venda_original.get("produto"),
+                quantidade_original,
+                valor_unit_original,
+                unidade_id=unidade_id,
+                produto_id=produto_id_original,
+            )
+
+            itens_pedido = [{"qtd": int(round(float(quantidade_original))), "produto": dados_venda_original.get("produto")}]
+
+            if aceitou:
+                preco_complementar = complementar.get("preco") or 0
+                registrar_venda(
+                    number,
+                    complementar.get("nome"),
+                    1,
+                    preco_complementar,
+                    unidade_id=unidade_id,
+                    produto_id=complementar.get("id"),
+                )
+                itens_pedido.append({"qtd": 1, "produto": complementar.get("nome")})
+                valor_total_pedido = round(valor_total_pedido + float(preco_complementar), 2)
+
+            criar_pedido_com_itens(
+                number,
+                nome_cliente=dados_venda_original.get("nome_cliente"),
+                endereco=dados_venda_original.get("endereco"),
+                forma_pagamento=dados_venda_original.get("forma_pagamento"),
+                itens=itens_pedido,
+                valor_total=valor_total_pedido,
+                unidade_id=unidade_id,
+            )
+
+            mensagem_final = (
+                "Seu pedido foi registrado e a entrega ja esta sendo providenciada! "
+                "Foi um prazer te atender! 😊\n\n"
+                "Que tal deixar uma avaliacao para nos ajudar a melhorar?\n"
+                "⭐ Farmacia Saude e Vida: https://search.google.com/local/writereview?placeid=ChIJAQBsTgC5rgARK0oiw3CQOpg\n\n"
+                "Obrigada pela preferencia! Volte sempre. 💙"
+            )
+            send(number, mensagem_final)
+            registrar_conversa(number, text, mensagem_final)
+            encerrado[number] = True
+            return "ok", 200
+
         if number and encerrado.get(number):
             if e_mensagem_de_despedida(text):
                 print(f"[SILENCIO] Despedida ignorada apos encerramento para {number}: {text}")
@@ -1210,22 +1459,42 @@ def webhook():
                     send(number, mensagem_receita)
                     registrar_conversa(number, text, mensagem_receita)
                 else:
-                    send(number, reply)
-                    registrar_conversa(number, text, reply)
-                    encerrado[number] = True
-                    print(f"CONVERSA ENCERRADA (aguardando so despedidas): {number}")
-                    if dados_venda:
-                        produto_id = buscar_produto_por_nome(dados_venda.get("produto"))
-                        unidade_id = escolher_loja_para_produto(produto_id) if produto_id else None
-                        registrar_venda(
-                            number,
-                            dados_venda.get("produto"),
-                            dados_venda.get("quantidade", 1),
-                            dados_venda.get("valor_unitario", 0),
-                            unidade_id=unidade_id,
-                            produto_id=produto_id,
+                    produto_id = buscar_produto_por_nome(dados_venda.get("produto"))
+                    complementar = buscar_produto_complementar(produto_id) if produto_id else None
+
+                    if complementar and complementar.get("nome"):
+                        aguardando_oferta_complementar[number] = {
+                            "dados_venda": dados_venda,
+                            "produto_id": produto_id,
+                            "complementar": complementar,
+                        }
+                        preco_txt = ""
+                        if complementar.get("preco"):
+                            preco_formatado = f"{complementar['preco']:.2f}".replace(".", ",")
+                            preco_txt = f" por apenas R$ {preco_formatado}"
+                        mensagem_oferta = (
+                            f"Antes de finalizar, que tal aproveitar e levar também "
+                            f"{complementar['nome']}{preco_txt}? É um ótimo complemento "
+                            f"para o que você está comprando! Posso incluir? 😊"
                         )
-                        criar_pedido(number, dados_venda, unidade_id=unidade_id)
+                        send(number, mensagem_oferta)
+                        registrar_conversa(number, text, mensagem_oferta)
+                    else:
+                        send(number, reply)
+                        registrar_conversa(number, text, reply)
+                        encerrado[number] = True
+                        print(f"CONVERSA ENCERRADA (aguardando so despedidas): {number}")
+                        if dados_venda:
+                            unidade_id = escolher_loja_para_produto(produto_id) if produto_id else None
+                            registrar_venda(
+                                number,
+                                dados_venda.get("produto"),
+                                dados_venda.get("quantidade", 1),
+                                dados_venda.get("valor_unitario", 0),
+                                unidade_id=unidade_id,
+                                produto_id=produto_id,
+                            )
+                            criar_pedido(number, dados_venda, unidade_id=unidade_id)
             else:
                 send(number, reply)
                 registrar_conversa(number, text, reply)
