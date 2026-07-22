@@ -161,6 +161,7 @@ CONTROLADOS_PALAVRAS_CHAVE = [
 
 aguardando_receita = {}
 aguardando_oferta_complementar = {}
+aguardando_avaliacao = {}
 
 TABELA_PRECOS = {
     "dipirona 500mg (20 comp)": 8.90,
@@ -490,6 +491,26 @@ def marcar_seguimento_respondido(number):
     except Exception as e:
         print("ERRO ao marcar seguimento respondido:", e)
     seguimento_pendente_id.pop(number, None)
+
+
+def salvar_nota_avaliacao(conversa_id, nota):
+    """Grava a nota de avaliacao (1 a 5) do cliente na linha da tabela
+    conversas correspondente ao atendimento avaliado."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY or not conversa_id:
+        return
+    try:
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json",
+        }
+        body = {"nota_avaliacao": nota}
+        requests.patch(
+            f"{SUPABASE_URL}/rest/v1/conversas?id=eq.{conversa_id}",
+            json=body, headers=headers, timeout=15
+        )
+    except Exception as e:
+        print("ERRO ao salvar nota de avaliacao:", e)
 
 
 def registrar_conversa(number, mensagem, resposta, transferida=False, motivo=None):
@@ -1198,6 +1219,46 @@ def responder_atendimento_endpoint():
         return com_cors({"erro": str(e)}, 500)
 
 
+@app.route("/pedir-avaliacao", methods=["POST", "OPTIONS"])
+def pedir_avaliacao_endpoint():
+    """Endpoint usado pela tela de Conversas do VidaFarma quando a atendente
+    clica em 'Encerrar atendimento'. Manda a pergunta de nota (1 a 5) pro
+    cliente e guarda qual conversa deve receber a nota quando ele responder."""
+    if request.method == "OPTIONS":
+        resp = make_response()
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return resp
+
+    def com_cors(resposta_json, status=200):
+        resp = jsonify(resposta_json)
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.status_code = status
+        return resp
+
+    try:
+        data = request.json or {}
+        telefone = data.get("telefone")
+        conversa_id = data.get("conversa_id")
+
+        if not telefone or not conversa_id:
+            return com_cors({"erro": "telefone e conversa_id sao obrigatorios"}, 400)
+
+        aguardando_avaliacao[telefone] = conversa_id
+
+        mensagem = (
+            "Antes de encerrarmos, que nota de 1 a 5 voce da para o atendimento que "
+            "acabou de receber? Basta responder com um numero. 😊"
+        )
+        send(telefone, mensagem)
+
+        return com_cors({"ok": True})
+    except Exception as e:
+        print("ERRO ao pedir avaliacao:", e)
+        return com_cors({"erro": str(e)}, 500)
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     global ultimo_cliente_transferido
@@ -1299,6 +1360,17 @@ def webhook():
             mensagens_processadas.add(message_id)
             if len(mensagens_processadas) > 10000:
                 mensagens_processadas.clear()
+
+        if number in aguardando_avaliacao:
+            texto_avaliacao = (extrair_texto(msg) or "").strip()
+            if texto_avaliacao in ("1", "2", "3", "4", "5"):
+                conversa_id = aguardando_avaliacao.pop(number)
+                salvar_nota_avaliacao(conversa_id, int(texto_avaliacao))
+                mensagem_obrigado = "Muito obrigada pela sua avaliação! Isso nos ajuda muito a melhorar. 💙"
+                send(number, mensagem_obrigado)
+                return "ok", 200
+            # Se a resposta nao for um numero de 1 a 5, deixa cair no fluxo
+            # normal abaixo (nao trava o cliente esperando uma nota valida).
 
         if number and transferido.get(number):
             return "ok", 200
