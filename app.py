@@ -1163,6 +1163,41 @@ def aprovar_receita_endpoint():
         return com_cors({"erro": str(e)}, 500)
 
 
+@app.route("/responder-atendimento", methods=["POST", "OPTIONS"])
+def responder_atendimento_endpoint():
+    """Endpoint usado pela tela de Conversas do VidaFarma para a atendente
+    humana enviar uma mensagem de verdade pro cliente, via UAZAPI. Recebe
+    telefone e mensagem; nao mexe na tabela conversas (o status do
+    atendimento continua controlado pelos campos ja existentes)."""
+    if request.method == "OPTIONS":
+        resp = make_response()
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return resp
+
+    def com_cors(resposta_json, status=200):
+        resp = jsonify(resposta_json)
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.status_code = status
+        return resp
+
+    try:
+        data = request.json or {}
+        telefone = data.get("telefone")
+        mensagem = data.get("mensagem")
+
+        if not telefone or not mensagem:
+            return com_cors({"erro": "telefone e mensagem sao obrigatorios"}, 400)
+
+        send(telefone, mensagem)
+
+        return com_cors({"ok": True})
+    except Exception as e:
+        print("ERRO ao responder atendimento:", e)
+        return com_cors({"erro": str(e)}, 500)
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     global ultimo_cliente_transferido
