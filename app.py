@@ -110,6 +110,13 @@ Antes de transferir, se voce ainda NAO sabe o nome do cliente nesta conversa, pe
 Assim que souber o nome (ou se ja sabia desde antes), responda EXATAMENTE e SOMENTE com o texto: TRANSFERIR_HUMANO
 Nao escreva mais nada alem dessas palavras quando isso acontecer.
 
+REGRA CRITICA DE ENCOMENDA (MEDICAMENTO INDISPONIVEL):
+Se o cliente perguntar por um medicamento ou produto que NAO esta na tabela de precos acima (ou seja, a farmacia nao tem esse item em estoque), voce NAO deve simplesmente dizer que nao tem e encerrar o assunto. Nesse caso, voce vai transferir para um atendente humano verificar a possibilidade de encomendar o produto para o cliente.
+Antes de transferir, se voce ainda NAO sabe o nome do cliente nesta conversa, pergunte PRIMEIRO e SOMENTE: "Antes de te transferir para um atendente, qual e o seu nome?" e aguarde a resposta dele. So depois de saber o nome, prossiga para a transferencia de verdade.
+Assim que souber o nome (ou se ja sabia desde antes), responda EXATAMENTE e SOMENTE com o texto: TRANSFERIR_ENCOMENDA
+Nao escreva mais nada alem dessas palavras quando isso acontecer.
+Isso e DIFERENTE de quando o produto pedido ESTA na tabela de precos (nesse caso, responda normalmente com o preco, sem transferir).
+
 REGRA CRITICA DE CONSULTA DE ENTREGA:
 Se o cliente perguntar sobre o andamento/status da entrega dele (exemplos: "meu pedido ja saiu para entrega?", "cade minha entrega", "meu pedido ja foi entregue?", "quando chega meu pedido"), voce NAO deve inventar nenhuma informacao sobre o status.
 Nesse caso, responda EXATAMENTE e SOMENTE com o texto: CONSULTAR_ENTREGA
@@ -1189,6 +1196,89 @@ def verificar_lembretes_recompra():
         time.sleep(6 * 60 * 60)
 
 
+def buscar_reaberturas_pendentes():
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        return []
+    try:
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+        }
+        agora_iso = datetime.now(pytz.utc).isoformat()
+        params = f"processada=eq.false&reabre_em=lte.{agora_iso}&select=id,conversa_id,cliente_telefone"
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/reaberturas_agendadas?{params}", headers=headers, timeout=15)
+        dados = r.json()
+        if isinstance(dados, list):
+            return dados
+        return []
+    except Exception as e:
+        print("ERRO ao buscar reaberturas pendentes:", e)
+        return []
+
+
+def reabrir_conversa(conversa_id):
+    """Volta a conversa para o estado 'aberta' no painel (sem atendente
+    atribuido, sem encerramento), para que apareca na fila normal de
+    atendimentos abertos e alguem possa contatar o cliente."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY or not conversa_id:
+        return False
+    try:
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "atendimento_encerrado": False,
+            "atendimento_assumido_em": None,
+            "aguardando_cliente": False,
+            "atendente_id": None,
+        }
+        r = requests.patch(
+            f"{SUPABASE_URL}/rest/v1/conversas?id=eq.{conversa_id}",
+            json=body, headers=headers, timeout=15
+        )
+        print(f"REABRIR CONVERSA {conversa_id} STATUS:{r.status_code}")
+        return r.status_code in (200, 204)
+    except Exception as e:
+        print("ERRO ao reabrir conversa:", e)
+        return False
+
+
+def marcar_reabertura_processada(reabertura_id):
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY or not reabertura_id:
+        return
+    try:
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json",
+        }
+        requests.patch(
+            f"{SUPABASE_URL}/rest/v1/reaberturas_agendadas?id=eq.{reabertura_id}",
+            json={"processada": True}, headers=headers, timeout=15
+        )
+    except Exception as e:
+        print("ERRO ao marcar reabertura como processada:", e)
+
+
+def verificar_reaberturas_agendadas():
+    while True:
+        try:
+            pendentes = buscar_reaberturas_pendentes()
+            for item in pendentes:
+                conversa_id = item.get("conversa_id")
+                reabertura_id = item.get("id")
+                sucesso = reabrir_conversa(conversa_id)
+                if sucesso:
+                    marcar_reabertura_processada(reabertura_id)
+                    print(f"[REABERTURA] Conversa {conversa_id} reaberta com sucesso")
+        except Exception as e:
+            print("ERRO no verificador de reaberturas agendadas:", e)
+
+        time.sleep(60)
+
+
 @app.route("/aprovar-receita", methods=["POST", "OPTIONS"])
 def aprovar_receita_endpoint():
     if request.method == "OPTIONS":
@@ -1684,6 +1774,27 @@ def webhook():
                 )
                 if conversa_id_criada:
                     conversa_ativa_id[number] = conversa_id_criada
+            elif "TRANSFERIR_ENCOMENDA" in reply:
+                nome_cliente_transferencia, pergunta_original = extrair_nome_e_pergunta_original(number)
+                pergunta_para_exibir = pergunta_original or text
+                transferido[number] = True
+                print(f"CONVERSA TRANSFERIDA PARA ATENDENTE HUMANO (encomenda, fila do painel): {number}")
+                mensagem_transferencia = (
+                    "Vou verificar com nossa equipe a possibilidade de encomendar esse item para "
+                    "voce, so um momento! 😊"
+                )
+                send(number, mensagem_transferencia)
+                motivo_texto = "Encomenda de medicamento indisponivel"
+                if nome_cliente_transferencia:
+                    motivo_texto += f" - Nome: {nome_cliente_transferencia}"
+                conversa_id_criada = registrar_conversa(
+                    number, pergunta_para_exibir, mensagem_transferencia,
+                    transferida=True,
+                    motivo=motivo_texto,
+                    retornar_id=True,
+                )
+                if conversa_id_criada:
+                    conversa_ativa_id[number] = conversa_id_criada
             elif "CONSULTAR_ENTREGA" in reply:
                 mensagem_status = consultar_status_entrega(number)
                 send(number, mensagem_status)
@@ -1851,6 +1962,7 @@ def send(number, text):
 
 threading.Thread(target=verificar_seguimentos, daemon=True).start()
 threading.Thread(target=verificar_lembretes_recompra, daemon=True).start()
+threading.Thread(target=verificar_reaberturas_agendadas, daemon=True).start()
 
 
 if __name__ == "__main__":
