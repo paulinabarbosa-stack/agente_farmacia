@@ -542,18 +542,22 @@ def registrar_conversa(number, mensagem, resposta, transferida=False, motivo=Non
         print("ERRO ao registrar conversa:", e)
 
 
-def extrair_nome_cliente(number):
-    """Usa a IA para identificar, dentro do historico da conversa, o nome
-    que o cliente informou quando a Isabela perguntou antes de transferir.
-    Retorna o nome (string) ou None se nao encontrar nada com clareza."""
+def extrair_nome_e_pergunta_original(number):
+    """Usa a IA para identificar, dentro do historico da conversa, o nome que
+    o cliente informou quando perguntado antes da transferencia, E a
+    pergunta/pedido original do cliente que motivou a transferencia (a
+    mensagem de ANTES do pedido de nome, nao a resposta com o nome em si).
+    Retorna (nome, pergunta_original), qualquer um podendo ser None."""
     if number not in historico:
-        return None
+        return None, None
 
     instrucao = (
-        "Na conversa abaixo, o atendente perguntou o nome do cliente em algum momento antes de "
-        "transferir o atendimento. Identifique APENAS o nome que o cliente informou. "
-        "Responda com o nome em texto puro, sem nenhuma explicacao adicional. "
-        "Se nao conseguir identificar nenhum nome informado pelo cliente, responda apenas: null"
+        "Na conversa abaixo, em algum momento o cliente fez uma pergunta ou pedido (por exemplo, sobre "
+        "sintomas, indicacao de remedio, ou desconto). Logo depois, o atendente perguntou o nome do "
+        "cliente antes de transferir, e o cliente respondeu com o nome dele. "
+        "Responda APENAS em JSON puro, sem nenhum texto adicional, exatamente neste formato: "
+        '{"nome": "nome informado pelo cliente ou null", '
+        '"pergunta_original": "a pergunta ou pedido original do cliente, ANTES dele informar o nome, ou null"}.'
     )
     messages = [{"role": "system", "content": instrucao}] + historico[number][-10:]
 
@@ -567,13 +571,19 @@ def extrair_nome_cliente(number):
         )
         r.raise_for_status()
         resultado = r.json()
-        nome = resultado["choices"][0]["message"]["content"].strip()
-        if not nome or nome.lower() == "null":
-            return None
-        return nome
+        conteudo = resultado["choices"][0]["message"]["content"].strip()
+        conteudo = re.sub(r"^```json|^```|```$", "", conteudo, flags=re.MULTILINE).strip()
+        dados = json.loads(conteudo)
+        nome = dados.get("nome")
+        pergunta = dados.get("pergunta_original")
+        if isinstance(nome, str) and nome.lower() == "null":
+            nome = None
+        if isinstance(pergunta, str) and pergunta.lower() == "null":
+            pergunta = None
+        return nome, pergunta
     except Exception as e:
-        print("ERRO ao extrair nome do cliente:", e)
-        return None
+        print("ERRO ao extrair nome e pergunta original:", e)
+        return None, None
 
 
 def extrair_dados_venda(number):
@@ -1569,7 +1579,8 @@ def webhook():
         reply = ask_openai(number, text)
         if reply:
             if "TRANSFERIR_FARMACEUTICO" in reply:
-                nome_cliente_transferencia = extrair_nome_cliente(number)
+                nome_cliente_transferencia, pergunta_original = extrair_nome_e_pergunta_original(number)
+                pergunta_para_exibir = pergunta_original or text
                 transferido[number] = True
                 mensagens_farmaceutico[number] = []
                 ultimo_cliente_transferido = number
@@ -1580,7 +1591,7 @@ def webhook():
                 if nome_cliente_transferencia:
                     motivo_texto += f" - Nome: {nome_cliente_transferencia}"
                 registrar_conversa(
-                    number, text, mensagem_transferencia,
+                    number, pergunta_para_exibir, mensagem_transferencia,
                     transferida=True,
                     motivo=motivo_texto,
                 )
@@ -1591,14 +1602,15 @@ def webhook():
                     f"{nome_txt}"
                     f"Cliente: {number}\n"
                     f"Abrir conversa direto com o cliente: https://wa.me/{number}\n"
-                    f"Pergunta do cliente: \"{text}\"\n\n"
+                    f"Pergunta do cliente: \"{pergunta_para_exibir}\"\n\n"
                     f"Fale diretamente com o cliente pelo link acima. Quando terminar, "
                     f"envie aqui /voltarbot seguido do resumo da orientacao "
                     f"(ex: /voltarbot Recomendei Dipirona 500mg, 1 comprimido a cada 6 horas)."
                 )
                 send(FARMACEUTICO_TESTE, resumo_para_farmaceutico)
             elif "TRANSFERIR_HUMANO" in reply:
-                nome_cliente_transferencia = extrair_nome_cliente(number)
+                nome_cliente_transferencia, pergunta_original = extrair_nome_e_pergunta_original(number)
+                pergunta_para_exibir = pergunta_original or text
                 transferido[number] = True
                 print(f"CONVERSA TRANSFERIDA PARA ATENDENTE HUMANO (fila do painel): {number}")
                 mensagem_transferencia = "Vou te conectar com uma de nossas atendentes, so um momento! 😊"
@@ -1607,7 +1619,7 @@ def webhook():
                 if nome_cliente_transferencia:
                     motivo_texto += f" - Nome: {nome_cliente_transferencia}"
                 registrar_conversa(
-                    number, text, mensagem_transferencia,
+                    number, pergunta_para_exibir, mensagem_transferencia,
                     transferida=True,
                     motivo=motivo_texto,
                 )
