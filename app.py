@@ -560,6 +560,39 @@ def registrar_conversa(number, mensagem, resposta, transferida=False, motivo=Non
         return None
 
 
+def buscar_conversa_humana_ativa(number):
+    """Verifica no Supabase se existe uma conversa transferida para humano
+    e ainda nao encerrada para esse telefone. Serve de fonte da verdade
+    além da memória do processo (dicionario transferido/conversa_ativa_id),
+    que se perde toda vez que o Railway reinicia ou faz um redeploy - sem
+    isso, um atendimento em andamento "esquecia" que estava transferido
+    assim que o servidor reiniciava, e a Isabela reiniciava a conversa do
+    zero com o cliente."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        return None
+    try:
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+        }
+        params = {
+            "cliente_telefone": f"eq.{number}",
+            "transferida_humano": "eq.true",
+            "atendimento_encerrado": "eq.false",
+            "select": "id",
+            "order": "criado_em.desc",
+            "limit": "1",
+        }
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/conversas", headers=headers, params=params, timeout=15)
+        dados = r.json()
+        if isinstance(dados, list) and dados:
+            return dados[0].get("id")
+        return None
+    except Exception as e:
+        print("ERRO ao buscar conversa humana ativa:", e)
+        return None
+
+
 def inserir_mensagem_atendimento(conversa_id, remetente, texto):
     """Grava uma mensagem no historico de thread de um atendimento (usado
     tanto para a resposta da atendente quanto para as mensagens que o
@@ -1571,10 +1604,22 @@ def webhook():
             # Se a resposta nao for um numero de 1 a 5, deixa cair no fluxo
             # normal abaixo (nao trava o cliente esperando uma nota valida).
 
-        if number and transferido.get(number):
+        conversa_id_atual = conversa_ativa_id.get(number)
+        esta_transferido = bool(number and transferido.get(number))
+
+        if number and not esta_transferido:
+            # A memoria pode ter sido limpa por um restart/redeploy do
+            # servidor - confirma no banco antes de tratar como conversa nova.
+            conversa_ativa_no_banco = buscar_conversa_humana_ativa(number)
+            if conversa_ativa_no_banco:
+                esta_transferido = True
+                transferido[number] = True
+                conversa_ativa_id[number] = conversa_ativa_no_banco
+                conversa_id_atual = conversa_ativa_no_banco
+
+        if esta_transferido:
             texto_cliente_thread = extrair_texto(msg) or chat.get("wa_lastMessageTextVote")
             if isinstance(texto_cliente_thread, str) and texto_cliente_thread.strip():
-                conversa_id_atual = conversa_ativa_id.get(number)
                 if conversa_id_atual:
                     inserir_mensagem_atendimento(conversa_id_atual, "cliente", texto_cliente_thread.strip())
             return "ok", 200
