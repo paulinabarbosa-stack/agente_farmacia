@@ -1310,7 +1310,16 @@ def responder_atendimento_endpoint():
 def pedir_avaliacao_endpoint():
     """Endpoint usado pela tela de Conversas do VidaFarma quando a atendente
     clica em 'Encerrar atendimento'. Manda a pergunta de nota (1 a 5) pro
-    cliente e guarda qual conversa deve receber a nota quando ele responder."""
+    cliente e guarda qual conversa deve receber a nota quando ele responder.
+
+    IMPORTANTE: aqui tambem encerramos o vinculo desse telefone com o
+    atendimento humano que acabou de ser fechado (transferido[telefone] e
+    conversa_ativa_id[telefone]). Sem isso, o sistema continuava achando
+    para sempre que aquele numero "ja estava transferido", e um pedido novo
+    do mesmo cliente no futuro nunca chegava a abrir uma conversa nova no
+    painel - so ficava caindo (ou se perdendo) dentro do atendimento antigo
+    ja encerrado.
+    """
     if request.method == "OPTIONS":
         resp = make_response()
         resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -1333,6 +1342,9 @@ def pedir_avaliacao_endpoint():
             return com_cors({"erro": "telefone e conversa_id sao obrigatorios"}, 400)
 
         aguardando_avaliacao[telefone] = conversa_id
+
+        transferido[telefone] = False
+        conversa_ativa_id.pop(telefone, None)
 
         mensagem = (
             "Antes de encerrarmos, que nota de 1 a 5 voce da para o atendimento que "
