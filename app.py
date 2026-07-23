@@ -513,10 +513,11 @@ def salvar_nota_avaliacao(conversa_id, nota):
             "Content-Type": "application/json",
         }
         body = {"nota_avaliacao": nota}
-        requests.patch(
+        r = requests.patch(
             f"{SUPABASE_URL}/rest/v1/conversas?id=eq.{conversa_id}",
             json=body, headers=headers, timeout=15
         )
+        print(f"SALVAR NOTA AVALIACAO STATUS:{r.status_code} BODY:{r.text[:300]}")
     except Exception as e:
         print("ERRO ao salvar nota de avaliacao:", e)
 
@@ -541,6 +542,7 @@ def registrar_conversa(number, mensagem, resposta, transferida=False, motivo=Non
         if motivo:
             body["motivo_transferencia"] = motivo
         r = requests.post(f"{SUPABASE_URL}/rest/v1/conversas", json=body, headers=headers, timeout=15)
+        print(f"REGISTRAR CONVERSA STATUS:{r.status_code} BODY:{r.text[:500]}")
         if retornar_id and r.status_code in (200, 201):
             dados = r.json()
             if dados:
