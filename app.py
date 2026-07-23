@@ -169,6 +169,7 @@ CONTROLADOS_PALAVRAS_CHAVE = [
 aguardando_receita = {}
 aguardando_oferta_complementar = {}
 aguardando_avaliacao = {}
+conversa_ativa_id = {}
 
 TABELA_PRECOS = {
     "dipirona 500mg (20 comp)": 8.90,
@@ -520,15 +521,17 @@ def salvar_nota_avaliacao(conversa_id, nota):
         print("ERRO ao salvar nota de avaliacao:", e)
 
 
-def registrar_conversa(number, mensagem, resposta, transferida=False, motivo=None):
+def registrar_conversa(number, mensagem, resposta, transferida=False, motivo=None, retornar_id=False):
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
-        return
+        return None
     try:
         headers = {
             "apikey": SUPABASE_ANON_KEY,
             "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
             "Content-Type": "application/json",
         }
+        if retornar_id:
+            headers["Prefer"] = "return=representation"
         body = {
             "cliente_telefone": number,
             "mensagem": mensagem,
@@ -537,9 +540,37 @@ def registrar_conversa(number, mensagem, resposta, transferida=False, motivo=Non
         }
         if motivo:
             body["motivo_transferencia"] = motivo
-        requests.post(f"{SUPABASE_URL}/rest/v1/conversas", json=body, headers=headers, timeout=15)
+        r = requests.post(f"{SUPABASE_URL}/rest/v1/conversas", json=body, headers=headers, timeout=15)
+        if retornar_id and r.status_code in (200, 201):
+            dados = r.json()
+            if dados:
+                return dados[0].get("id")
+        return None
     except Exception as e:
         print("ERRO ao registrar conversa:", e)
+        return None
+
+
+def inserir_mensagem_atendimento(conversa_id, remetente, texto):
+    """Grava uma mensagem no historico de thread de um atendimento (usado
+    tanto para a resposta da atendente quanto para as mensagens que o
+    cliente manda de volta durante o atendimento humano)."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY or not conversa_id:
+        return
+    try:
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "conversa_id": conversa_id,
+            "remetente": remetente,
+            "texto": texto,
+        }
+        requests.post(f"{SUPABASE_URL}/rest/v1/mensagens_atendimento", json=body, headers=headers, timeout=15)
+    except Exception as e:
+        print("ERRO ao inserir mensagem de atendimento:", e)
 
 
 def extrair_nome_e_pergunta_original(number):
@@ -1258,11 +1289,16 @@ def responder_atendimento_endpoint():
         data = request.json or {}
         telefone = data.get("telefone")
         mensagem = data.get("mensagem")
+        conversa_id = data.get("conversa_id")
 
         if not telefone or not mensagem:
             return com_cors({"erro": "telefone e mensagem sao obrigatorios"}, 400)
 
         send(telefone, mensagem)
+
+        if conversa_id:
+            conversa_ativa_id[telefone] = conversa_id
+            inserir_mensagem_atendimento(conversa_id, "atendente", mensagem)
 
         return com_cors({"ok": True})
     except Exception as e:
@@ -1424,6 +1460,11 @@ def webhook():
             # normal abaixo (nao trava o cliente esperando uma nota valida).
 
         if number and transferido.get(number):
+            texto_cliente_thread = extrair_texto(msg) or chat.get("wa_lastMessageTextVote")
+            if isinstance(texto_cliente_thread, str) and texto_cliente_thread.strip():
+                conversa_id_atual = conversa_ativa_id.get(number)
+                if conversa_id_atual:
+                    inserir_mensagem_atendimento(conversa_id_atual, "cliente", texto_cliente_thread.strip())
             return "ok", 200
 
         msg_type = msg.get("type", "")
@@ -1590,11 +1631,14 @@ def webhook():
                 motivo_texto = "Cliente pediu indicacao/sugestao de medicamento"
                 if nome_cliente_transferencia:
                     motivo_texto += f" - Nome: {nome_cliente_transferencia}"
-                registrar_conversa(
+                conversa_id_criada = registrar_conversa(
                     number, pergunta_para_exibir, mensagem_transferencia,
                     transferida=True,
                     motivo=motivo_texto,
+                    retornar_id=True,
                 )
+                if conversa_id_criada:
+                    conversa_ativa_id[number] = conversa_id_criada
 
                 nome_txt = f"Nome: {nome_cliente_transferencia}\n" if nome_cliente_transferencia else ""
                 resumo_para_farmaceutico = (
@@ -1618,11 +1662,14 @@ def webhook():
                 motivo_texto = "Cliente pediu desconto"
                 if nome_cliente_transferencia:
                     motivo_texto += f" - Nome: {nome_cliente_transferencia}"
-                registrar_conversa(
+                conversa_id_criada = registrar_conversa(
                     number, pergunta_para_exibir, mensagem_transferencia,
                     transferida=True,
                     motivo=motivo_texto,
+                    retornar_id=True,
                 )
+                if conversa_id_criada:
+                    conversa_ativa_id[number] = conversa_id_criada
             elif "CONSULTAR_ENTREGA" in reply:
                 mensagem_status = consultar_status_entrega(number)
                 send(number, mensagem_status)
