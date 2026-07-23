@@ -1205,8 +1205,16 @@ def buscar_reaberturas_pendentes():
             "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
         }
         agora_iso = datetime.now(pytz.utc).isoformat()
-        params = f"processada=eq.false&reabre_em=lte.{agora_iso}&select=id,conversa_id,cliente_telefone"
-        r = requests.get(f"{SUPABASE_URL}/rest/v1/reaberturas_agendadas?{params}", headers=headers, timeout=15)
+        params = {
+            "processada": "eq.false",
+            "reabre_em": f"lte.{agora_iso}",
+            "select": "id,conversa_id,cliente_telefone",
+        }
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/reaberturas_agendadas",
+            headers=headers, params=params, timeout=15
+        )
+        print(f"BUSCAR REABERTURAS PENDENTES STATUS:{r.status_code} BODY:{r.text[:300]}")
         dados = r.json()
         if isinstance(dados, list):
             return dados
