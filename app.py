@@ -98,10 +98,17 @@ Para os demais medicamentos (analgesicos e antitermicos como Dipirona, Paracetam
 
 REGRA CRITICA DE TRANSFERENCIA PARA O FARMACEUTICO:
 Se o cliente pedir INDICACAO, SUGESTAO ou ORIENTACAO sobre qual medicamento tomar para um sintoma, dor ou problema de saude (exemplos: "o que eu tomo pra dor de cabeca", "me indica um remedio pra gripe", "qual o melhor remedio para dor nas costas", "estou com febre, o que eu tomo"), voce NAO deve sugerir nenhum medicamento.
-Nesse caso, responda EXATAMENTE e SOMENTE com o texto: TRANSFERIR_FARMACEUTICO
+Antes de transferir, se voce ainda NAO sabe o nome do cliente nesta conversa, pergunte PRIMEIRO e SOMENTE: "Antes de te transferir para o nosso farmaceutico, qual e o seu nome?" e aguarde a resposta dele. So depois de saber o nome, prossiga para a transferencia de verdade.
+Assim que souber o nome (ou se ja sabia desde antes), responda EXATAMENTE e SOMENTE com o texto: TRANSFERIR_FARMACEUTICO
 Nao escreva mais nada alem dessas palavras quando isso acontecer.
 
 Isso e DIFERENTE de quando o cliente ja sabe o nome do medicamento e so quer saber preco ou disponibilidade (exemplo: "voces tem dipirona?", "quanto custa o paracetamol?") - nesses casos, responda normalmente com a tabela de precos.
+
+REGRA CRITICA DE TRANSFERENCIA PARA ATENDENTE HUMANO (DESCONTO):
+Se o cliente pedir DESCONTO, pechinchar o preco, ou perguntar se "tem como baixar o preco" / "faz um precinho" / "tem algum desconto", voce NAO deve conceder nenhum desconto nem negociar preco.
+Antes de transferir, se voce ainda NAO sabe o nome do cliente nesta conversa, pergunte PRIMEIRO e SOMENTE: "Antes de te transferir para um atendente, qual e o seu nome?" e aguarde a resposta dele. So depois de saber o nome, prossiga para a transferencia de verdade.
+Assim que souber o nome (ou se ja sabia desde antes), responda EXATAMENTE e SOMENTE com o texto: TRANSFERIR_HUMANO
+Nao escreva mais nada alem dessas palavras quando isso acontecer.
 
 REGRA CRITICA DE CONSULTA DE ENTREGA:
 Se o cliente perguntar sobre o andamento/status da entrega dele (exemplos: "meu pedido ja saiu para entrega?", "cade minha entrega", "meu pedido ja foi entregue?", "quando chega meu pedido"), voce NAO deve inventar nenhuma informacao sobre o status.
@@ -533,6 +540,40 @@ def registrar_conversa(number, mensagem, resposta, transferida=False, motivo=Non
         requests.post(f"{SUPABASE_URL}/rest/v1/conversas", json=body, headers=headers, timeout=15)
     except Exception as e:
         print("ERRO ao registrar conversa:", e)
+
+
+def extrair_nome_cliente(number):
+    """Usa a IA para identificar, dentro do historico da conversa, o nome
+    que o cliente informou quando a Isabela perguntou antes de transferir.
+    Retorna o nome (string) ou None se nao encontrar nada com clareza."""
+    if number not in historico:
+        return None
+
+    instrucao = (
+        "Na conversa abaixo, o atendente perguntou o nome do cliente em algum momento antes de "
+        "transferir o atendimento. Identifique APENAS o nome que o cliente informou. "
+        "Responda com o nome em texto puro, sem nenhuma explicacao adicional. "
+        "Se nao conseguir identificar nenhum nome informado pelo cliente, responda apenas: null"
+    )
+    messages = [{"role": "system", "content": instrucao}] + historico[number][-10:]
+
+    h = {"Authorization": "Bearer " + KEY, "Content-Type": "application/json"}
+    b = {"model": "gpt-4o-mini", "messages": messages}
+
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            json=b, headers=h, timeout=30
+        )
+        r.raise_for_status()
+        resultado = r.json()
+        nome = resultado["choices"][0]["message"]["content"].strip()
+        if not nome or nome.lower() == "null":
+            return None
+        return nome
+    except Exception as e:
+        print("ERRO ao extrair nome do cliente:", e)
+        return None
 
 
 def extrair_dados_venda(number):
@@ -1528,20 +1569,26 @@ def webhook():
         reply = ask_openai(number, text)
         if reply:
             if "TRANSFERIR_FARMACEUTICO" in reply:
+                nome_cliente_transferencia = extrair_nome_cliente(number)
                 transferido[number] = True
                 mensagens_farmaceutico[number] = []
                 ultimo_cliente_transferido = number
                 print(f"CONVERSA TRANSFERIDA PARA FARMACEUTICO: {number}")
                 mensagem_transferencia = "Vou te conectar com nosso farmaceutico para te orientar melhor sobre isso, so um momento! 😊"
                 send(number, mensagem_transferencia)
+                motivo_texto = "Cliente pediu indicacao/sugestao de medicamento"
+                if nome_cliente_transferencia:
+                    motivo_texto += f" - Nome: {nome_cliente_transferencia}"
                 registrar_conversa(
                     number, text, mensagem_transferencia,
                     transferida=True,
-                    motivo="Cliente pediu indicacao/sugestao de medicamento",
+                    motivo=motivo_texto,
                 )
 
+                nome_txt = f"Nome: {nome_cliente_transferencia}\n" if nome_cliente_transferencia else ""
                 resumo_para_farmaceutico = (
                     f"📋 Novo atendimento transferido!\n"
+                    f"{nome_txt}"
                     f"Cliente: {number}\n"
                     f"Abrir conversa direto com o cliente: https://wa.me/{number}\n"
                     f"Pergunta do cliente: \"{text}\"\n\n"
@@ -1550,6 +1597,20 @@ def webhook():
                     f"(ex: /voltarbot Recomendei Dipirona 500mg, 1 comprimido a cada 6 horas)."
                 )
                 send(FARMACEUTICO_TESTE, resumo_para_farmaceutico)
+            elif "TRANSFERIR_HUMANO" in reply:
+                nome_cliente_transferencia = extrair_nome_cliente(number)
+                transferido[number] = True
+                print(f"CONVERSA TRANSFERIDA PARA ATENDENTE HUMANO (fila do painel): {number}")
+                mensagem_transferencia = "Vou te conectar com uma de nossas atendentes, so um momento! 😊"
+                send(number, mensagem_transferencia)
+                motivo_texto = "Cliente pediu desconto"
+                if nome_cliente_transferencia:
+                    motivo_texto += f" - Nome: {nome_cliente_transferencia}"
+                registrar_conversa(
+                    number, text, mensagem_transferencia,
+                    transferida=True,
+                    motivo=motivo_texto,
+                )
             elif "CONSULTAR_ENTREGA" in reply:
                 mensagem_status = consultar_status_entrega(number)
                 send(number, mensagem_status)
