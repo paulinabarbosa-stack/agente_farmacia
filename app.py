@@ -16,6 +16,7 @@ BASE = os.environ.get("UAZAPI_URL")
 TOKEN = os.environ.get("UAZAPI_TOKEN")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
 SYSTEM_PROMPT = """Voce e Isabela, atendente virtual da Farmacia Saude e Vida, localizada em Diamantina-MG. Horario de funcionamento: 7h00 as 22h00, todos os dias.
 Seja sempre simpatica, acolhedora e prestativa. Represente a farmacia com cuidado e profissionalismo.
@@ -1436,6 +1437,119 @@ def responder_atendimento_endpoint():
         return com_cors({"ok": True})
     except Exception as e:
         print("ERRO ao responder atendimento:", e)
+        return com_cors({"erro": str(e)}, 500)
+
+
+@app.route("/criar-acesso", methods=["POST", "OPTIONS"])
+def criar_acesso_endpoint():
+    """Cria um login individual (Supabase Auth) + o perfil correspondente
+    (papel henrique/atendente, vinculado opcionalmente a um atendente_id).
+    Usa a service_role key, que so existe aqui no servidor - nunca deve
+    ir para o codigo do painel (frontend)."""
+    if request.method == "OPTIONS":
+        resp = make_response()
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return resp
+
+    def com_cors(resposta_json, status=200):
+        resp = jsonify(resposta_json)
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.status_code = status
+        return resp
+
+    try:
+        data = request.json or {}
+        nome = (data.get("nome") or "").strip()
+        email = (data.get("email") or "").strip()
+        senha = data.get("senha") or ""
+        papel = data.get("papel")
+        atendente_id = data.get("atendente_id")
+
+        if not nome or not email or not senha or papel not in ("henrique", "atendente"):
+            return com_cors({"erro": "Preencha nome, e-mail, senha e papel corretamente"}, 400)
+
+        if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+            return com_cors({"erro": "Service role key nao configurada no servidor"}, 500)
+
+        headers_admin = {
+            "apikey": SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+            "Content-Type": "application/json",
+        }
+
+        r = requests.post(
+            f"{SUPABASE_URL}/auth/v1/admin/users",
+            json={"email": email, "password": senha, "email_confirm": True},
+            headers=headers_admin, timeout=20,
+        )
+
+        if r.status_code not in (200, 201):
+            print("ERRO ao criar usuario auth:", r.status_code, r.text)
+            return com_cors({"erro": "Nao foi possivel criar o login (e-mail ja existe ou senha fraca)"}, 400)
+
+        usuario = r.json()
+        user_id = usuario.get("id")
+
+        body_perfil = {"user_id": user_id, "nome": nome, "email": email, "papel": papel}
+        if atendente_id:
+            body_perfil["atendente_id"] = atendente_id
+
+        r2 = requests.post(
+            f"{SUPABASE_URL}/rest/v1/perfis", json=body_perfil, headers=headers_admin, timeout=15
+        )
+
+        if r2.status_code not in (200, 201):
+            print("ERRO ao criar perfil:", r2.status_code, r2.text)
+            requests.delete(f"{SUPABASE_URL}/auth/v1/admin/users/{user_id}", headers=headers_admin, timeout=15)
+            return com_cors({"erro": "Login criado, mas houve erro ao salvar o perfil. Tente novamente."}, 500)
+
+        return com_cors({"ok": True})
+    except Exception as e:
+        print("ERRO ao criar acesso:", e)
+        return com_cors({"erro": str(e)}, 500)
+
+
+@app.route("/excluir-acesso", methods=["POST", "OPTIONS"])
+def excluir_acesso_endpoint():
+    """Exclui um login individual (Supabase Auth). O perfil correspondente
+    e apagado automaticamente por CASCADE."""
+    if request.method == "OPTIONS":
+        resp = make_response()
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return resp
+
+    def com_cors(resposta_json, status=200):
+        resp = jsonify(resposta_json)
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.status_code = status
+        return resp
+
+    try:
+        data = request.json or {}
+        user_id = data.get("user_id")
+        if not user_id:
+            return com_cors({"erro": "user_id e obrigatorio"}, 400)
+
+        if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+            return com_cors({"erro": "Service role key nao configurada no servidor"}, 500)
+
+        headers_admin = {
+            "apikey": SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        }
+        r = requests.delete(f"{SUPABASE_URL}/auth/v1/admin/users/{user_id}", headers=headers_admin, timeout=20)
+
+        if r.status_code not in (200, 204):
+            print("ERRO ao excluir usuario auth:", r.status_code, r.text)
+            return com_cors({"erro": "Nao foi possivel excluir o login"}, 400)
+
+        return com_cors({"ok": True})
+    except Exception as e:
+        print("ERRO ao excluir acesso:", e)
         return com_cors({"erro": str(e)}, 500)
 
 
