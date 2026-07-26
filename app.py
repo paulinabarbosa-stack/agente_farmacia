@@ -1774,6 +1774,7 @@ def webhook():
                     "tiver novidade! 😊"
                 )
                 send(number, mensagem_confirmacao)
+                registrar_resposta_no_historico(number, mensagem_confirmacao)
                 registrar_conversa(number, "[Foto da receita recebida]", mensagem_confirmacao)
                 notificar_farmaceutico_receita_pendente(number, dados_venda)
                 encerrado[number] = True
@@ -1899,6 +1900,7 @@ def webhook():
                 print(f"CONVERSA TRANSFERIDA PARA FARMACEUTICO: {number}")
                 mensagem_transferencia = "Vou te conectar com nosso farmaceutico para te orientar melhor sobre isso, so um momento! 😊"
                 send(number, mensagem_transferencia)
+                registrar_resposta_no_historico(number, mensagem_transferencia)
                 motivo_texto = "Cliente pediu indicacao/sugestao de medicamento"
                 if nome_cliente_transferencia:
                     motivo_texto += f" - Nome: {nome_cliente_transferencia}"
@@ -1930,6 +1932,7 @@ def webhook():
                 print(f"CONVERSA TRANSFERIDA PARA ATENDENTE HUMANO (fila do painel): {number}")
                 mensagem_transferencia = "Vou te conectar com uma de nossas atendentes, so um momento! 😊"
                 send(number, mensagem_transferencia)
+                registrar_resposta_no_historico(number, mensagem_transferencia)
                 motivo_texto = "Cliente pediu desconto"
                 if nome_cliente_transferencia:
                     motivo_texto += f" - Nome: {nome_cliente_transferencia}"
@@ -1951,6 +1954,7 @@ def webhook():
                     "voce, so um momento! 😊"
                 )
                 send(number, mensagem_transferencia)
+                registrar_resposta_no_historico(number, mensagem_transferencia)
                 motivo_texto = "Encomenda de medicamento indisponivel"
                 if nome_cliente_transferencia:
                     motivo_texto += f" - Nome: {nome_cliente_transferencia}"
@@ -1965,6 +1969,7 @@ def webhook():
             elif "CONSULTAR_ENTREGA" in reply:
                 mensagem_status = consultar_status_entrega(number)
                 send(number, mensagem_status)
+                registrar_resposta_no_historico(number, mensagem_status)
                 registrar_conversa(number, text, mensagem_status)
             elif "Foi um prazer te atender" in reply:
                 dados_venda = extrair_dados_venda(number)
@@ -1976,6 +1981,7 @@ def webhook():
                         "da receita medica, por favor! 📋"
                     )
                     send(number, mensagem_receita)
+                    registrar_resposta_no_historico(number, mensagem_receita)
                     registrar_conversa(number, text, mensagem_receita)
                 else:
                     produto_id = buscar_produto_por_nome(dados_venda.get("produto"))
@@ -1997,6 +2003,7 @@ def webhook():
                             f"para o que você está comprando! Posso incluir? 😊"
                         )
                         send(number, mensagem_oferta)
+                        registrar_resposta_no_historico(number, mensagem_oferta)
                         registrar_conversa(number, text, mensagem_oferta)
                     else:
                         send(number, reply)
@@ -2022,6 +2029,24 @@ def webhook():
         print("ERROR:", e)
 
     return "ok", 200
+
+
+def registrar_resposta_no_historico(number, texto):
+    """Registra na memoria da propria IA (historico[number]) uma mensagem
+    que foi enviada pro cliente por fora do ask_openai() - por exemplo,
+    o pedido de foto da receita, a confirmacao de recebimento dela, a
+    oferta de produto complementar, ou o status de entrega.
+
+    Sem isso, a IA "esquece" que essas mensagens foram enviadas de
+    verdade: ela so lembra do ultimo texto que ELA MESMA gerou via
+    OpenAI (normalmente a mensagem de fechamento generica), e ao
+    responder a proxima mensagem do cliente, tende a gerar essa mesma
+    mensagem de fechamento de novo - o que faz o codigo reiniciar todo
+    o fluxo (por exemplo, pedir a foto da receita outra vez, mesmo ja
+    tendo recebido)."""
+    if number not in historico:
+        historico[number] = []
+    historico[number].append({"role": "assistant", "content": texto})
 
 
 def ask_openai(number, text):
