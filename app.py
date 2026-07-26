@@ -4,6 +4,7 @@ import os
 import re
 import json
 import base64
+import random
 import threading
 import time
 from datetime import datetime, timedelta
@@ -559,6 +560,100 @@ def registrar_conversa(number, mensagem, resposta, transferida=False, motivo=Non
     except Exception as e:
         print("ERRO ao registrar conversa:", e)
         return None
+
+
+def escolher_atendente_menos_ocupada():
+    """Escolhe, entre as atendentes ativas e que nao estao em pausa agora,
+    quem tem menos atendimentos em andamento no momento (distribuicao
+    automatica por carga, nao por ordem fixa). Em caso de empate, a
+    escolha e aleatoria entre as empatadas, para nao favorecer sempre a
+    mesma pessoa. Retorna {"id", "nome"} ou None se ninguem disponivel."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        return None
+    try:
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+        }
+        params_atendentes = {"ativo": "eq.true", "em_pausa": "eq.false", "select": "id,nome"}
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/atendentes", headers=headers, params=params_atendentes, timeout=15)
+        disponiveis = r.json()
+        if not isinstance(disponiveis, list) or not disponiveis:
+            return None
+
+        params_conversas = {
+            "atendimento_encerrado": "eq.false",
+            "atendente_id": "not.is.null",
+            "select": "atendente_id",
+        }
+        r2 = requests.get(f"{SUPABASE_URL}/rest/v1/conversas", headers=headers, params=params_conversas, timeout=15)
+        conversas_ativas = r2.json()
+
+        contagem = {}
+        if isinstance(conversas_ativas, list):
+            for c in conversas_ativas:
+                aid = c.get("atendente_id")
+                if aid:
+                    contagem[aid] = contagem.get(aid, 0) + 1
+
+        random.shuffle(disponiveis)
+        disponiveis.sort(key=lambda a: contagem.get(a["id"], 0))
+        escolhida = disponiveis[0]
+        print(f"ATENDENTE ESCOLHIDA AUTOMATICAMENTE: {escolhida.get('nome')} (carga atual: {contagem.get(escolhida['id'], 0)})")
+        return escolhida
+    except Exception as e:
+        print("ERRO ao escolher atendente menos ocupada:", e)
+        return None
+
+
+def atribuir_atendente_automaticamente(conversa_id, atendente_id):
+    """Marca a conversa como ja assumida pela atendente escolhida
+    automaticamente, pulando o status 'aberta' - a conversa entra direto
+    como 'em atendimento' na tela Conversas."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY or not conversa_id:
+        return False
+    try:
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "atendente_id": atendente_id,
+            "atendimento_assumido_em": datetime.now(pytz.utc).isoformat(),
+        }
+        r = requests.patch(
+            f"{SUPABASE_URL}/rest/v1/conversas?id=eq.{conversa_id}", json=body, headers=headers, timeout=15
+        )
+        print(f"AUTO-ATRIBUICAO STATUS:{r.status_code}")
+        return r.status_code in (200, 204)
+    except Exception as e:
+        print("ERRO ao atribuir atendente automaticamente:", e)
+        return False
+
+
+def transferir_com_distribuicao_automatica(number, conversa_id_criada):
+    """Depois de criar a conversa transferida para a fila humana, tenta
+    distribuir automaticamente para a atendente disponivel com menos
+    atendimentos em andamento agora. Se conseguir, ja manda a mensagem de
+    apresentacao pro cliente (igual acontece quando alguem assume
+    manualmente pela tela). Se ninguem estiver disponivel, a conversa
+    fica como 'aberta' na fila, esperando alguem assumir manualmente."""
+    if not conversa_id_criada:
+        return
+
+    atendente = escolher_atendente_menos_ocupada()
+    if not atendente:
+        print("Nenhuma atendente disponivel agora - conversa fica na fila 'aberta'.")
+        return
+
+    sucesso = atribuir_atendente_automaticamente(conversa_id_criada, atendente["id"])
+    if not sucesso:
+        return
+
+    mensagem_apresentacao = f"Ola, me chamo {atendente['nome']} e estou aqui para lhe ajudar. 😊"
+    send(number, mensagem_apresentacao)
+    inserir_mensagem_atendimento(conversa_id_criada, "atendente", mensagem_apresentacao)
 
 
 def buscar_conversa_humana_ativa(number):
@@ -1944,6 +2039,7 @@ def webhook():
                 )
                 if conversa_id_criada:
                     conversa_ativa_id[number] = conversa_id_criada
+                transferir_com_distribuicao_automatica(number, conversa_id_criada)
             elif "TRANSFERIR_ENCOMENDA" in reply:
                 nome_cliente_transferencia, pergunta_original = extrair_nome_e_pergunta_original(number)
                 pergunta_para_exibir = pergunta_original or text
@@ -1966,6 +2062,7 @@ def webhook():
                 )
                 if conversa_id_criada:
                     conversa_ativa_id[number] = conversa_id_criada
+                transferir_com_distribuicao_automatica(number, conversa_id_criada)
             elif "CONSULTAR_ENTREGA" in reply:
                 mensagem_status = consultar_status_entrega(number)
                 send(number, mensagem_status)
