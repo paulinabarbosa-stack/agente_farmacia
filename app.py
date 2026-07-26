@@ -1687,6 +1687,10 @@ def pedir_avaliacao_endpoint():
 
         transferido[telefone] = False
         conversa_ativa_id.pop(telefone, None)
+        # Impede que o verificador de follow-up automatico (mensagens tipo
+        # "notei que voce sumiu...") mande algo pra esse cliente logo
+        # depois que um humano acabou de encerrar o atendimento.
+        encerrado[telefone] = True
 
         mensagem = (
             "Antes de encerrarmos, que nota de 1 a 5 voce da para o atendimento que "
