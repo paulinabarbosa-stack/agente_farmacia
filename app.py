@@ -1562,7 +1562,7 @@ def criar_acesso_endpoint():
         papel = data.get("papel")
         atendente_id = data.get("atendente_id")
 
-        if not nome or not email or not senha or papel not in ("henrique", "atendente"):
+        if not nome or not email or not senha or papel not in ("henrique", "atendente", "separador"):
             return com_cors({"erro": "Preencha nome, e-mail, senha e papel corretamente"}, 400)
 
         if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
