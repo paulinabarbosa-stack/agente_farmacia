@@ -10,6 +10,8 @@ import time
 from datetime import datetime, timedelta
 import pytz
 
+from sincronizar_estoque import verificar_sincronizacao_estoque
+
 app = Flask(__name__)
 
 KEY = os.environ.get("OPENAI_API_KEY")
@@ -2261,6 +2263,7 @@ def send(number, text):
 threading.Thread(target=verificar_seguimentos, daemon=True).start()
 threading.Thread(target=verificar_lembretes_recompra, daemon=True).start()
 threading.Thread(target=verificar_reaberturas_agendadas, daemon=True).start()
+threading.Thread(target=verificar_sincronizacao_estoque, daemon=True).start()
 
 
 if __name__ == "__main__":
