@@ -12,7 +12,7 @@ Fluxo de cada ciclo:
 
 FORMATO REAL DO /estoque (confirmado em producao, 28/07/2026): cada item
 retornado representa um PRODUTO, com uma lista aninhada "Estoques" contendo
-uma entrada por loja onde ele existe. Exemplo real:
+uma entrada por loja onde ele tem estoque. Exemplo real:
 
     {
       "Produto": "7896658002113",              # o proprio codigo de barras
@@ -156,14 +156,20 @@ def _extrair_quantidade(estoque_item):
 def _upsert_estoque(produto_id, unidade_id, quantidade):
     """Insere ou atualiza uma linha na tabela estoque, usando produto_id +
     unidade_id como chave de conflito. Requer a constraint UNIQUE citada no
-    topo do arquivo."""
+    topo do arquivo.
+
+    A coluna estoque.quantidade e do tipo integer no Supabase - por isso
+    convertemos aqui antes de enviar (a HOS pode mandar a quantidade como
+    float, tipo 3.0)."""
     try:
+        quantidade_int = int(round(quantidade))
+
         headers = _headers_admin()
         headers["Prefer"] = "resolution=merge-duplicates"
         body = {
             "produto_id": produto_id,
             "unidade_id": unidade_id,
-            "quantidade": quantidade,
+            "quantidade": quantidade_int,
         }
         params = {"on_conflict": "produto_id,unidade_id"}
         r = requests.post(
