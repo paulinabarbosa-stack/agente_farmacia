@@ -10,20 +10,23 @@ Fluxo de cada ciclo:
 2. Para cada codigo de empresa HOS configurado (ver hos_api.CHAVE_POR_CODIGO),
    busca o /estoque e faz upsert na tabela estoque.
 
+FORMATO REAL DO /estoque (confirmado em producao, 28/07/2026): cada item
+retornado representa um PRODUTO, com uma lista aninhada "Estoques" contendo
+uma entrada por loja onde ele existe. Exemplo real:
+
+    {
+      "Produto": "7896658002113",              # o proprio codigo de barras
+      "CodigoInterno": 9,
+      "ListaEans": [{"CodigoBarras": "7896658002113"}],
+      "Estoques": [{"CNPJ": "02165564000290", "Quantidade": 3}]
+    }
+
 IMPORTANTE - pre-requisito no banco: a tabela estoque precisa de uma
 constraint UNIQUE em (produto_id, unidade_id) pro upsert funcionar. Se
 ainda nao existir, rode uma vez no SQL Editor do Supabase:
 
     ALTER TABLE estoque
     ADD CONSTRAINT estoque_produto_unidade_unique UNIQUE (produto_id, unidade_id);
-
-AVISO SOBRE O FORMATO DO /estoque DA HOS: a API nao documenta oficialmente
-os nomes dos campos de cada item retornado. As funcoes _extrair_* abaixo
-tentam os nomes mais provaveis (baseados no padrao Capitalizado usado nos
-outros endpoints, tipo Cnpj, Descricao, CodigoBarras). No primeiro ciclo
-rodando de verdade, o log vai imprimir um item bruto de exemplo - se algum
-campo nao for encontrado (aparecer nos contadores de "pulados"), me manda
-esse log que eu ajusto rapido.
 """
 
 import os
@@ -49,8 +52,8 @@ def _headers_admin():
 
 def _normalizar_cnpj(valor):
     """Remove tudo que nao for digito, pra poder comparar o CNPJ retornado
-    pela HOS (geralmente so numeros) com o cadastrado em unidades.cnpj
-    (que pode estar formatado, tipo 02.165.564/0002-90)."""
+    pela HOS (so numeros) com o cadastrado em unidades.cnpj (que pode estar
+    formatado, tipo 02.165.564/0002-90)."""
     if not valor:
         return ""
     return re.sub(r"\D", "", str(valor))
@@ -127,36 +130,24 @@ def buscar_todas_unidades():
 
 
 def _extrair_codigo_barras(item):
-    """Tenta os nomes de campo mais provaveis pro codigo de barras dentro
-    de um item retornado por /estoque. Retorna None se nao encontrar."""
-    for chave in ("CodigoBarras", "codigoBarras", "codigo_barras", "Ean", "ean"):
-        if item.get(chave):
-            return str(item[chave])
-    produto = item.get("Produto") or item.get("produto")
-    if isinstance(produto, dict):
-        for chave in ("CodigoBarras", "codigoBarras", "Ean", "ean"):
-            if produto.get(chave):
-                return str(produto[chave])
+    """O campo 'Produto' retornado pela HOS ja e o proprio codigo de
+    barras (confirmado em producao). 'ListaEans' serve de fallback caso
+    'Produto' venha vazio em algum registro."""
+    if item.get("Produto"):
+        return str(item["Produto"])
+    lista_eans = item.get("ListaEans")
+    if isinstance(lista_eans, list) and lista_eans:
+        primeiro = lista_eans[0]
+        if isinstance(primeiro, dict) and primeiro.get("CodigoBarras"):
+            return str(primeiro["CodigoBarras"])
     return None
 
 
-def _extrair_cnpj(item):
-    for chave in ("Cnpj", "cnpj", "CnpjUnidade", "cnpjUnidade"):
-        if item.get(chave):
-            return str(item[chave])
-    unidade = item.get("Unidade") or item.get("unidade")
-    if isinstance(unidade, dict):
-        for chave in ("Cnpj", "cnpj"):
-            if unidade.get(chave):
-                return str(unidade[chave])
-    return None
-
-
-def _extrair_quantidade(item):
+def _extrair_quantidade(estoque_item):
     for chave in ("Quantidade", "quantidade", "Qtd", "qtd"):
-        if item.get(chave) is not None:
+        if estoque_item.get(chave) is not None:
             try:
-                return float(item[chave])
+                return float(estoque_item[chave])
             except (TypeError, ValueError):
                 return None
     return None
@@ -190,7 +181,10 @@ def _upsert_estoque(produto_id, unidade_id, quantidade):
 def sincronizar_uma_vez():
     """Roda um ciclo completo de sincronizacao: busca os mapas de produtos
     e unidades, chama o /estoque da HOS para cada codigo de empresa
-    configurado, e grava no Supabase."""
+    configurado, e grava no Supabase.
+
+    Cada item do /estoque representa UM PRODUTO, com uma lista aninhada
+    "Estoques" contendo uma entrada por loja onde ele tem estoque."""
     mapa_produtos = buscar_todos_produtos()
     mapa_unidades = buscar_todas_unidades()
 
@@ -213,7 +207,7 @@ def sincronizar_uma_vez():
             print(f"[SINCRONIZAR ESTOQUE] Resposta inesperada do /estoque (codigo {codigo}): {str(itens)[:300]}")
             continue
 
-        print(f"[SINCRONIZAR ESTOQUE] Codigo {codigo}: {len(itens)} registro(s) recebido(s)")
+        print(f"[SINCRONIZAR ESTOQUE] Codigo {codigo}: {len(itens)} produto(s) recebido(s)")
 
         if itens:
             print(f"[SINCRONIZAR ESTOQUE] Exemplo de item bruto (codigo {codigo}): {itens[0]}")
@@ -222,32 +216,45 @@ def sincronizar_uma_vez():
         pulados_produto = 0
         pulados_unidade = 0
         pulados_quantidade = 0
+        pulados_sem_estoques = 0
 
         for item in itens:
             codigo_barras = _extrair_codigo_barras(item)
-            cnpj = _normalizar_cnpj(_extrair_cnpj(item))
-            quantidade = _extrair_quantidade(item)
-
             produto_id = mapa_produtos.get(codigo_barras) if codigo_barras else None
-            unidade_id = mapa_unidades.get(cnpj) if cnpj else None
 
             if not produto_id:
                 pulados_produto += 1
                 continue
-            if not unidade_id:
-                pulados_unidade += 1
-                continue
-            if quantidade is None:
-                pulados_quantidade += 1
+
+            lista_estoques = item.get("Estoques")
+            if not isinstance(lista_estoques, list) or not lista_estoques:
+                pulados_sem_estoques += 1
                 continue
 
-            _upsert_estoque(produto_id, unidade_id, quantidade)
-            atualizados += 1
+            for estoque_item in lista_estoques:
+                if not isinstance(estoque_item, dict):
+                    continue
+
+                cnpj = _normalizar_cnpj(estoque_item.get("CNPJ") or estoque_item.get("Cnpj"))
+                quantidade = _extrair_quantidade(estoque_item)
+                unidade_id = mapa_unidades.get(cnpj) if cnpj else None
+
+                if not unidade_id:
+                    pulados_unidade += 1
+                    continue
+                if quantidade is None:
+                    pulados_quantidade += 1
+                    continue
+
+                _upsert_estoque(produto_id, unidade_id, quantidade)
+                atualizados += 1
 
         print(
-            f"[SINCRONIZAR ESTOQUE] Codigo {codigo} concluido: {atualizados} atualizado(s), "
-            f"{pulados_produto} sem produto correspondente, {pulados_unidade} sem unidade correspondente, "
-            f"{pulados_quantidade} sem quantidade valida"
+            f"[SINCRONIZAR ESTOQUE] Codigo {codigo} concluido: {atualizados} linha(s) de estoque atualizada(s), "
+            f"{pulados_produto} produto(s) sem correspondencia no Supabase, "
+            f"{pulados_sem_estoques} produto(s) sem lista de Estoques, "
+            f"{pulados_unidade} entrada(s) sem unidade correspondente, "
+            f"{pulados_quantidade} entrada(s) sem quantidade valida"
         )
 
 
