@@ -229,7 +229,6 @@ def sincronizar_uma_vez():
             produto_id = mapa_produtos.get(codigo_barras) if codigo_barras else None
 
             if not produto_id:
-                if not produto_id:
                 pulados_produto += 1
                 print(f"[SINCRONIZAR ESTOQUE] Sem correspondencia no Supabase para codigo_barras='{codigo_barras}'")
                 continue
