@@ -1591,6 +1591,73 @@ def aprovar_receita_endpoint():
         return com_cors({"erro": str(e)}, 500)
 
 
+@app.route("/recusar-receita", methods=["POST", "OPTIONS"])
+def recusar_receita_endpoint():
+    """Endpoint chamado pela tela Receitas Pendentes quando o farmaceutico
+    recusa uma receita. CORRECAO (28/07/2026): antes, o botao "Recusar" so
+    atualizava o status no Supabase direto do frontend - o cliente nunca
+    recebia nenhuma resposta, ficava esperando pra sempre. Agora o cliente
+    e avisado do motivo da recusa e pode reenviar uma nova foto."""
+    if request.method == "OPTIONS":
+        resp = make_response()
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return resp
+
+    def com_cors(resposta_json, status=200):
+        resp = jsonify(resposta_json)
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.status_code = status
+        return resp
+
+    try:
+        data = request.json or {}
+        receita_id = data.get("id")
+        motivo = (data.get("motivo") or "").strip()
+
+        if not receita_id:
+            return com_cors({"erro": "id da receita e obrigatorio"}, 400)
+
+        if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+            return com_cors({"erro": "Supabase nao configurado"}, 500)
+
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+        }
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/receitas_pendentes?id=eq.{receita_id}&select=*",
+            headers=headers, timeout=15
+        )
+        registros = r.json()
+        if not registros:
+            return com_cors({"erro": "receita nao encontrada"}, 404)
+
+        receita = registros[0]
+        number = receita.get("cliente_telefone")
+        motivo_texto = motivo or receita.get("motivo_recusa") or "não foi possível confirmar a validade da receita enviada"
+
+        mensagem_recusa = (
+            "Poxa, sua receita não foi aprovada pelo nosso farmacêutico responsável.\n"
+            f"Motivo: {motivo_texto}\n\n"
+            "Se puder, envie uma nova foto da receita (bem legível e completa) que a gente "
+            "reavalia com prazer! Qualquer dúvida, é só chamar. 💙"
+        )
+        send(number, mensagem_recusa)
+        registrar_conversa(number, "[Receita recusada pelo farmaceutico]", mensagem_recusa)
+
+        # Libera o numero para um novo atendimento, em vez de ficar preso
+        # esperando uma receita que nunca vai ser aprovada.
+        aguardando_receita.pop(number, None)
+        encerrado[number] = True
+
+        return com_cors({"ok": True})
+    except Exception as e:
+        print("ERRO ao recusar receita:", e)
+        return com_cors({"erro": str(e)}, 500)
+
+
 @app.route("/responder-atendimento", methods=["POST", "OPTIONS"])
 def responder_atendimento_endpoint():
     """Endpoint usado pela tela de Conversas do VidaFarma para a atendente
