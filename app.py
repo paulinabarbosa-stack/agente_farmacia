@@ -133,7 +133,8 @@ FLUXO DE PEDIDO OBRIGATORIO:
 Quando o cliente quiser comprar, siga SEMPRE esta ordem:
 1. Confirme o produto e o preco
 2. Se o medicamento for um dos que EXIGEM RECEITA (ver REGRA IMPORTANTE SOBRE RECEITA MEDICA acima): avise que e necessario apresentar receita medica valida. Caso contrario, NAO mencione receita.
-3. Peca TODAS as informacoes de uma vez so, numa unica mensagem:
+3. Se houver uma mensagem de sistema no inicio desta conversa dizendo que esse cliente ja comprou antes (com nome/endereco/forma de pagamento conhecidos), confirme esses dados com ele numa unica mensagem curta (ex: "Posso confirmar a entrega no mesmo endereco de sempre, [endereco]?") e peca so o que estiver faltando (normalmente so o CPF, que nunca fica salvo). Se ele disser que mudou algo, peca o dado atualizado.
+   Se NAO houver essa informacao de cliente conhecido, peca TODAS as informacoes de uma vez so, numa unica mensagem:
 "Para finalizar seu pedido, preciso de algumas informacoes:
 - Nome completo:
 - Endereco completo (rua, numero, bairro):
@@ -2397,9 +2398,64 @@ def registrar_resposta_no_historico(number, texto):
     historico[number].append({"role": "assistant", "content": texto})
 
 
+def buscar_ultimo_pedido_cliente(number):
+    """Busca o pedido mais recente desse telefone (nome/endereco/forma de
+    pagamento), para a Isabela poder confirmar esses dados em vez de pedir
+    tudo de novo do zero a cada novo pedido - decisao de reuniao (29/07/2026),
+    motivada pelo caso de clientes com varios cadastros de endereco na Rede
+    Soma: usar o endereco/dados da ULTIMA conversa/pedido, nao o primeiro
+    cadastro. Retorna None se nao houver pedido anterior ou em caso de erro."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        return None
+    try:
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+        }
+        params = f"cliente_telefone=eq.{number}&order=criado_em.desc&limit=1&select=nome_cliente,endereco,forma_pagamento"
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/pedidos?{params}", headers=headers, timeout=15)
+        dados = r.json()
+        if not dados:
+            return None
+        pedido = dados[0]
+        if not pedido.get("nome_cliente") and not pedido.get("endereco"):
+            return None
+        return pedido
+    except Exception as e:
+        print("ERRO ao buscar ultimo pedido do cliente:", e)
+        return None
+
+
 def ask_openai(number, text):
-    if number not in historico:
+    eh_conversa_nova = number not in historico
+    if eh_conversa_nova:
         historico[number] = []
+
+        # So busca o pedido anterior na primeira vez que esse numero aparece
+        # nesta sessao do processo (evita ficar repetindo a consulta e
+        # repetindo a mensagem de sistema a cada mensagem da conversa).
+        ultimo_pedido = buscar_ultimo_pedido_cliente(number)
+        if ultimo_pedido:
+            partes_conhecidas = []
+            if ultimo_pedido.get("nome_cliente"):
+                partes_conhecidas.append(f"Nome: {ultimo_pedido['nome_cliente']}")
+            if ultimo_pedido.get("endereco"):
+                partes_conhecidas.append(f"Endereco: {ultimo_pedido['endereco']}")
+            if ultimo_pedido.get("forma_pagamento"):
+                partes_conhecidas.append(f"Forma de pagamento usada da ultima vez: {ultimo_pedido['forma_pagamento']}")
+            if partes_conhecidas:
+                historico[number].append({
+                    "role": "system",
+                    "content": (
+                        "Este cliente ja comprou antes. Dados do pedido mais recente dele: "
+                        + "; ".join(partes_conhecidas) + ". "
+                        "Quando ele for fechar um novo pedido, NAO peca essas informacoes do zero - "
+                        "confirme com ele se nome, endereco e forma de pagamento continuam os mesmos "
+                        "(pode perguntar de forma direta, tipo 'posso confirmar a entrega no mesmo "
+                        "endereco de sempre?'), e so peca de novo o que ele disser que mudou ou o que "
+                        "estiver faltando (por exemplo, o CPF, que nao fica salvo)."
+                    )
+                })
 
     historico[number].append({"role": "user", "content": text})
 
@@ -2410,7 +2466,15 @@ def ask_openai(number, text):
 
     saudacao = get_saudacao()
 
-    if len(historico[number]) == 1:
+    # CORRECAO (29/07/2026): antes checava len(historico[number]) == 1 para
+    # saber se era a primeira mensagem - isso quebrava para clientes
+    # conhecidos, porque agora a primeira "mensagem" da conversa pode vir
+    # acompanhada de uma mensagem de sistema com os dados do pedido
+    # anterior (ver buscar_ultimo_pedido_cliente), deixando o historico com
+    # 2 itens em vez de 1 logo de cara. Usamos eh_conversa_nova, que reflete
+    # corretamente se esta e a primeira vez que esse numero aparece nesta
+    # sessao, independente de quantas mensagens de sistema foram injetadas.
+    if eh_conversa_nova:
         instrucao = (
             SYSTEM_PROMPT
             + f" Esta e a PRIMEIRA mensagem. Voce DEVE responder EXATAMENTE com:"
