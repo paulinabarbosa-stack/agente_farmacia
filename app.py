@@ -1647,12 +1647,29 @@ def recusar_receita_endpoint():
         send(number, mensagem_recusa)
         registrar_conversa(number, "[Receita recusada pelo farmaceutico]", mensagem_recusa)
 
-        # CORRECAO (28/07/2026): NAO apagar aguardando_receita[number] aqui.
-        # O numero precisa continuar marcado como "aguardando receita" para
-        # que a proxima foto que o cliente mandar (a nova receita que
-        # acabamos de pedir) seja processada pelo webhook normalmente. Se
-        # apagarmos aqui, a foto seguinte e silenciosamente ignorada (o bot
-        # "para de responder" - foi exatamente o bug reportado em teste).
+        # CORRECAO 2 (28/07/2026): o estado aguardando_receita[number] ja
+        # tinha sido apagado la atras, no momento em que a PRIMEIRA foto foi
+        # recebida (ver o "aguardando_receita.pop(number)" no webhook) - nao
+        # era mais nada a "nao apagar" aqui, como a correcao anterior supos.
+        # Por isso a proxima foto do cliente nunca era processada: o numero
+        # simplesmente nao estava mais marcado como "aguardando receita".
+        # A correcao de verdade e RECRIAR esse estado aqui, reconstruindo o
+        # pedido a partir do que ja esta salvo no Supabase, para a proxima
+        # foto ser aceita normalmente pelo mesmo trecho do webhook.
+        itens_reconstruidos = receita.get("itens_json")
+        if not isinstance(itens_reconstruidos, list) or not itens_reconstruidos:
+            itens_reconstruidos = [{
+                "produto": receita.get("produto"),
+                "quantidade": receita.get("quantidade", 1),
+                "valor_unitario": receita.get("valor_unitario", 0),
+            }]
+
+        aguardando_receita[number] = {
+            "produtos": itens_reconstruidos,
+            "nome_cliente": receita.get("nome_cliente"),
+            "endereco": receita.get("endereco"),
+            "forma_pagamento": receita.get("forma_pagamento"),
+        }
 
         return com_cors({"ok": True})
     except Exception as e:
