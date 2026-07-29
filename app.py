@@ -763,16 +763,24 @@ def extrair_nome_e_pergunta_original(number):
 
 
 def extrair_dados_venda(number):
+    """Extrai os dados do pedido que acabou de ser fechado. IMPORTANTE: o
+    pedido pode ter MAIS DE UM PRODUTO (ex: cliente pede Nimesulida e
+    Amoxicilina na mesma conversa) - por isso o retorno sempre traz uma
+    LISTA em "produtos", nunca um produto unico solto. Isso e critico para
+    a checagem de medicamento controlado (ver eh_controlado/
+    algum_item_controlado) nao pular nenhum item do carrinho."""
     if number not in historico:
         return None
 
     instrucao = (
         "Baseado na conversa abaixo, extraia os dados do pedido que acabou de ser fechado. "
+        "O pedido pode ter UM OU MAIS produtos - inclua TODOS os produtos mencionados como "
+        "parte da compra, nao só o primeiro. "
         "Responda APENAS em JSON puro, sem nenhum texto adicional, exatamente neste formato: "
-        '{"produto": "nome do produto", "quantidade": 1, "valor_unitario": 0.00, '
+        '{"produtos": [{"produto": "nome do produto", "quantidade": 1, "valor_unitario": 0.00}], '
         '"nome_cliente": "nome completo informado", "endereco": "endereco completo informado", '
         '"forma_pagamento": "Pix, cartao de credito, cartao de debito ou dinheiro"}. '
-        'Se nao conseguir identificar o produto com certeza, responda {"produto": null}. '
+        'Se nao conseguir identificar nenhum produto com certeza, responda {"produtos": []}. '
         'Para os demais campos, se nao encontrar a informacao na conversa, use null.'
     )
     messages = [{"role": "system", "content": instrucao}] + historico[number][-14:]
@@ -790,12 +798,44 @@ def extrair_dados_venda(number):
         conteudo = resultado["choices"][0]["message"]["content"].strip()
         conteudo = re.sub(r"^```json|^```|```$", "", conteudo, flags=re.MULTILINE).strip()
         dados = json.loads(conteudo)
-        if not dados.get("produto"):
+        if not dados.get("produtos"):
             return None
         return dados
     except Exception as e:
         print("ERRO ao extrair dados da venda:", e)
         return None
+
+
+def produtos_da_venda(dados_venda):
+    """Retorna sempre uma lista de itens do pedido (cada um com produto/
+    quantidade/valor_unitario), a partir do dados_venda retornado por
+    extrair_dados_venda. Funcao central usada em todos os lugares que
+    processam o carrinho, para nunca tratar so o primeiro item."""
+    if not dados_venda:
+        return []
+    itens = dados_venda.get("produtos")
+    if isinstance(itens, list):
+        return [item for item in itens if item.get("produto")]
+    return []
+
+
+def algum_item_controlado(itens):
+    """Verifica TODOS os itens do carrinho, nao so o primeiro - e a
+    correcao do bug em que um pedido com 2+ produtos (ex: Nimesulida +
+    Amoxicilina) deixava passar o item controlado sem pedir receita."""
+    return any(eh_controlado(item.get("produto")) for item in itens)
+
+
+def formatar_lista_itens(itens):
+    """Monta uma descricao legivel do carrinho, tipo
+    "Amoxicilina 500mg (21 caps) x1 + Nimesulida 100mg (20 comp) x1",
+    usada para exibir o pedido completo nas telas e mensagens que hoje so
+    tem um campo de texto para "produto"."""
+    partes = []
+    for item in itens:
+        qtd = item.get("quantidade", 1)
+        partes.append(f"{item.get('produto')} x{qtd}")
+    return " + ".join(partes) if partes else ""
 
 
 def extrair_dados_receita(image_bytes):
@@ -881,10 +921,28 @@ def subir_foto_receita(image_bytes, number):
 
 def salvar_receita_pendente(number, dados_venda, dados_receita, foto_url):
     """Grava no Supabase o registro da receita aguardando aprovacao do
-    farmaceutico, com os dados do pedido e os dados extraidos da receita."""
+    farmaceutico, com os dados do pedido e os dados extraidos da receita.
+
+    IMPORTANTE (correcao 28/07/2026): o pedido pode ter varios produtos, nao
+    so o controlado. Por isso gravamos a lista completa em "itens_json"
+    (nova coluna, precisa existir na tabela receitas_pendentes - ver
+    instrucao de ALTER TABLE), preservando cada item com produto/
+    quantidade/valor_unitario para reconstruir a venda certinho quando o
+    farmaceutico aprovar. Os campos antigos (produto/quantidade/
+    valor_unitario) continuam preenchidos, com um resumo legivel de TODOS
+    os itens, so para a tela atual de Receitas Pendentes continuar
+    mostrando algo com sentido sem precisar mudar o frontend agora."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return
     try:
+        itens = produtos_da_venda(dados_venda)
+        descricao_itens = formatar_lista_itens(itens) or dados_venda.get("produto")
+        quantidade_total = sum(int(round(float(item.get("quantidade", 1)))) for item in itens) if itens else dados_venda.get("quantidade", 1)
+        valor_total = (
+            sum(float(item.get("quantidade", 1)) * float(item.get("valor_unitario", 0)) for item in itens)
+            if itens else dados_venda.get("valor_unitario", 0)
+        )
+
         headers = {
             "apikey": SUPABASE_ANON_KEY,
             "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
@@ -892,9 +950,10 @@ def salvar_receita_pendente(number, dados_venda, dados_receita, foto_url):
         }
         body = {
             "cliente_telefone": number,
-            "produto": dados_venda.get("produto"),
-            "quantidade": dados_venda.get("quantidade", 1),
-            "valor_unitario": dados_venda.get("valor_unitario", 0),
+            "produto": descricao_itens,
+            "quantidade": quantidade_total,
+            "valor_unitario": round(valor_total, 2),
+            "itens_json": itens,
             "nome_cliente": dados_venda.get("nome_cliente"),
             "endereco": dados_venda.get("endereco"),
             "forma_pagamento": dados_venda.get("forma_pagamento"),
@@ -915,11 +974,13 @@ def salvar_receita_pendente(number, dados_venda, dados_receita, foto_url):
 def notificar_farmaceutico_receita_pendente(number, dados_venda):
     """Manda um aviso curto para o farmaceutico (sem a foto, para nao lotar
     o WhatsApp dele) informando que ha uma receita nova aguardando revisao
-    no sistema."""
-    produto = dados_venda.get("produto", "medicamento controlado")
+    no sistema. Lista TODOS os itens do pedido, nao so o controlado, para
+    o farmaceutico ter o contexto completo da compra."""
+    itens = produtos_da_venda(dados_venda)
+    descricao = formatar_lista_itens(itens) or dados_venda.get("produto", "medicamento controlado")
     mensagem = (
         f"📋 Nova receita aguardando aprovacao!\n"
-        f"Produto: {produto}\n"
+        f"Pedido: {descricao}\n"
         f"Cliente: {number}\n"
         f"Acesse o VidaFarma, na aba Receitas Pendentes, para revisar a foto e aprovar ou recusar."
     )
@@ -1462,27 +1523,55 @@ def aprovar_receita_endpoint():
         receita = registros[0]
         number = receita.get("cliente_telefone")
 
-        dados_venda = {
-            "produto": receita.get("produto"),
-            "quantidade": receita.get("quantidade", 1),
-            "valor_unitario": receita.get("valor_unitario", 0),
-            "nome_cliente": receita.get("nome_cliente"),
-            "endereco": receita.get("endereco"),
-            "forma_pagamento": receita.get("forma_pagamento"),
-        }
+        # CORRECAO (28/07/2026): usa itens_json quando existir (pedidos com
+        # 1+ produtos, salvos pela versao corrigida de salvar_receita_pendente).
+        # Registros antigos sem itens_json caem no fallback de item unico,
+        # para nao quebrar receitas que ja estavam pendentes antes da correcao.
+        itens = receita.get("itens_json")
+        if not isinstance(itens, list) or not itens:
+            itens = [{
+                "produto": receita.get("produto"),
+                "quantidade": receita.get("quantidade", 1),
+                "valor_unitario": receita.get("valor_unitario", 0),
+            }]
 
-        produto_id = buscar_produto_por_nome(dados_venda.get("produto"))
-        unidade_id = escolher_loja_para_produto(produto_id) if produto_id else None
+        nome_cliente = receita.get("nome_cliente")
+        endereco = receita.get("endereco")
+        forma_pagamento = receita.get("forma_pagamento")
 
-        registrar_venda(
+        itens_pedido = []
+        valor_total_pedido = 0.0
+        unidade_id_escolhida = None
+
+        for item in itens:
+            produto_id_item = buscar_produto_por_nome(item.get("produto"))
+            unidade_id_item = escolher_loja_para_produto(produto_id_item) if produto_id_item else None
+            if unidade_id_escolhida is None:
+                unidade_id_escolhida = unidade_id_item
+
+            qtd = item.get("quantidade", 1)
+            valor_unit = item.get("valor_unitario", 0)
+
+            registrar_venda(
+                number,
+                item.get("produto"),
+                qtd,
+                valor_unit,
+                unidade_id=unidade_id_item,
+                produto_id=produto_id_item,
+            )
+            itens_pedido.append({"qtd": int(round(float(qtd))), "produto": item.get("produto")})
+            valor_total_pedido += float(qtd) * float(valor_unit)
+
+        criar_pedido_com_itens(
             number,
-            dados_venda.get("produto"),
-            dados_venda.get("quantidade", 1),
-            dados_venda.get("valor_unitario", 0),
-            unidade_id=unidade_id,
-            produto_id=produto_id,
+            nome_cliente=nome_cliente,
+            endereco=endereco,
+            forma_pagamento=forma_pagamento,
+            itens=itens_pedido,
+            valor_total=round(valor_total_pedido, 2),
+            unidade_id=unidade_id_escolhida,
         )
-        criar_pedido(number, dados_venda, unidade_id=unidade_id)
 
         mensagem_aprovado = (
             "Boas notícias! Sua receita foi aprovada pelo nosso farmacêutico e "
@@ -2081,24 +2170,40 @@ def webhook():
                 registrar_conversa(number, text, mensagem_status)
             elif "Foi um prazer te atender" in reply:
                 dados_venda = extrair_dados_venda(number)
+                itens_pedido_extraidos = produtos_da_venda(dados_venda)
 
-                if dados_venda and eh_controlado(dados_venda.get("produto")):
+                if dados_venda and algum_item_controlado(itens_pedido_extraidos):
+                    # CORRECAO DE SEGURANCA (28/07/2026): antes, so o primeiro
+                    # produto do carrinho era checado - um pedido com 2+ itens
+                    # (ex: Nimesulida + Amoxicilina) podia fechar sem pedir
+                    # receita se o controlado nao fosse o primeiro identificado.
+                    # Agora TODO o carrinho fica pendente ate a receita ser
+                    # aprovada, mesmo que so 1 dos itens exija receita.
                     aguardando_receita[number] = dados_venda
+                    nomes_controlados = [
+                        item.get("produto") for item in itens_pedido_extraidos
+                        if eh_controlado(item.get("produto"))
+                    ]
                     mensagem_receita = (
-                        "Para finalizar a compra desse medicamento, preciso que voce me envie uma foto "
-                        "da receita medica, por favor! 📋"
+                        "Para finalizar a compra, preciso que voce me envie uma foto da receita "
+                        f"medica de: {', '.join(nomes_controlados)}, por favor! 📋"
                     )
                     send(number, mensagem_receita)
                     registrar_resposta_no_historico(number, mensagem_receita)
                     registrar_conversa(number, text, mensagem_receita)
                 else:
-                    produto_id = buscar_produto_por_nome(dados_venda.get("produto"))
-                    complementar = buscar_produto_complementar(produto_id) if produto_id else None
+                    itens_resolvidos = []
+                    for item in itens_pedido_extraidos:
+                        produto_id_item = buscar_produto_por_nome(item.get("produto"))
+                        itens_resolvidos.append({**item, "produto_id": produto_id_item})
+
+                    produto_id_principal = itens_resolvidos[0]["produto_id"] if itens_resolvidos else None
+                    complementar = buscar_produto_complementar(produto_id_principal) if produto_id_principal else None
 
                     if complementar and complementar.get("nome"):
                         aguardando_oferta_complementar[number] = {
                             "dados_venda": dados_venda,
-                            "produto_id": produto_id,
+                            "produto_id": produto_id_principal,
                             "complementar": complementar,
                         }
                         preco_txt = ""
@@ -2118,17 +2223,42 @@ def webhook():
                         registrar_conversa(number, text, reply)
                         encerrado[number] = True
                         print(f"CONVERSA ENCERRADA (aguardando so despedidas): {number}")
-                        if dados_venda:
-                            unidade_id = escolher_loja_para_produto(produto_id) if produto_id else None
-                            registrar_venda(
+                        if itens_resolvidos:
+                            itens_pedido = []
+                            valor_total_pedido = 0.0
+                            unidade_id_escolhida = None
+                            for item in itens_resolvidos:
+                                unidade_id_item = (
+                                    escolher_loja_para_produto(item["produto_id"])
+                                    if item["produto_id"] else None
+                                )
+                                if unidade_id_escolhida is None:
+                                    unidade_id_escolhida = unidade_id_item
+                                qtd = item.get("quantidade", 1)
+                                valor_unit = item.get("valor_unitario", 0)
+                                registrar_venda(
+                                    number,
+                                    item.get("produto"),
+                                    qtd,
+                                    valor_unit,
+                                    unidade_id=unidade_id_item,
+                                    produto_id=item["produto_id"],
+                                )
+                                itens_pedido.append({
+                                    "qtd": int(round(float(qtd))),
+                                    "produto": item.get("produto"),
+                                })
+                                valor_total_pedido += float(qtd) * float(valor_unit)
+
+                            criar_pedido_com_itens(
                                 number,
-                                dados_venda.get("produto"),
-                                dados_venda.get("quantidade", 1),
-                                dados_venda.get("valor_unitario", 0),
-                                unidade_id=unidade_id,
-                                produto_id=produto_id,
+                                nome_cliente=dados_venda.get("nome_cliente"),
+                                endereco=dados_venda.get("endereco"),
+                                forma_pagamento=dados_venda.get("forma_pagamento"),
+                                itens=itens_pedido,
+                                valor_total=round(valor_total_pedido, 2),
+                                unidade_id=unidade_id_escolhida,
                             )
-                            criar_pedido(number, dados_venda, unidade_id=unidade_id)
             else:
                 send(number, reply)
                 registrar_conversa(number, text, reply)
