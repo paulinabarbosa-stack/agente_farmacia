@@ -424,7 +424,7 @@ encerrado = {}
 PALAVRAS_DESPEDIDA = [
     "obrigad", "valeu", "vlw", "tchau", "ate mais", "ate logo", "de nada",
     "por nada", "certeza", "beleza", "blz", "flw", "otimo", "otima",
-    "perfeito", "perfeita", "show", "top",
+    "perfeito", "perfeita", "show", "top", "ok", "blza", "suave",
 ]
 
 
@@ -1582,10 +1582,14 @@ def aprovar_receita_endpoint():
             unidade_id=unidade_id_escolhida,
         )
 
+        # CORRECAO (29/07/2026): mensagem simplificada, seguindo feedback da
+        # reuniao com Daniel/Lucas/Henrique - a descricao longa sobre "receita
+        # aprovada pelo farmaceutico" foi tirada; o foco agora e confirmar a
+        # entrega e lembrar de ter a receita fisica/original em maos.
         mensagem_aprovado = (
-            "Boas notícias! Sua receita foi aprovada pelo nosso farmacêutico e "
-            "seu pedido foi registrado - a entrega já está sendo providenciada! "
-            "Foi um prazer te atender! 😊\n\n"
+            "Tudo certo! Sua entrega já está sendo providenciada. 😊\n"
+            "Só não esqueça de ter a receita original em mãos na hora da entrega.\n\n"
+            "Foi um prazer te atender!\n\n"
             "Que tal deixar uma avaliação para nos ajudar a melhorar?\n"
             "⭐ Farmacia Saude e Vida: https://search.google.com/local/writereview?placeid=ChIJAQBsTgC5rgARK0oiw3CQOpg\n\n"
             "Obrigada pela preferência! Volte sempre. 💙"
@@ -2167,12 +2171,23 @@ def webhook():
             encerrado[number] = True
             return "ok", 200
 
+        # CORRECAO (29/07/2026): antes, essa checagem so rodava quando a
+        # conversa JA estava marcada como encerrada (encerrado[number]=True,
+        # o que so acontece apos um pedido fechado de verdade). Numa
+        # conversa de agradecimento solto (cliente so manda "Ok", "Não
+        # obrigado" etc sem nunca ter fechado pedido), esse estado nunca
+        # chegava a ser True, e a Isabela ficava gerando uma resposta nova
+        # via IA pra cada "Ok" pra sempre, num loop de gentilezas ("Tudo
+        # bem!", "Fico a disposicao!"...). Agora a checagem de despedida
+        # roda sempre, independente do estado anterior, e silencia+marca
+        # como encerrada assim que reconhece esse tipo de mensagem curta.
+        if number and e_mensagem_de_despedida(text):
+            print(f"[SILENCIO] Mensagem de despedida/reconhecimento curto ignorada para {number}: {text}")
+            encerrado[number] = True
+            return "ok", 200
+
         if number and encerrado.get(number):
-            if e_mensagem_de_despedida(text):
-                print(f"[SILENCIO] Despedida ignorada apos encerramento para {number}: {text}")
-                return "ok", 200
-            else:
-                encerrado[number] = False
+            encerrado[number] = False
 
         if number:
             marcar_seguimento_respondido(number)
