@@ -1647,10 +1647,12 @@ def recusar_receita_endpoint():
         send(number, mensagem_recusa)
         registrar_conversa(number, "[Receita recusada pelo farmaceutico]", mensagem_recusa)
 
-        # Libera o numero para um novo atendimento, em vez de ficar preso
-        # esperando uma receita que nunca vai ser aprovada.
-        aguardando_receita.pop(number, None)
-        encerrado[number] = True
+        # CORRECAO (28/07/2026): NAO apagar aguardando_receita[number] aqui.
+        # O numero precisa continuar marcado como "aguardando receita" para
+        # que a proxima foto que o cliente mandar (a nova receita que
+        # acabamos de pedir) seja processada pelo webhook normalmente. Se
+        # apagarmos aqui, a foto seguinte e silenciosamente ignorada (o bot
+        # "para de responder" - foi exatamente o bug reportado em teste).
 
         return com_cors({"ok": True})
     except Exception as e:
