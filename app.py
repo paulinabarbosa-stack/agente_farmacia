@@ -721,8 +721,13 @@ def transferir_com_distribuicao_automatica(number, conversa_id_criada):
     if not sucesso:
         return
 
-    saudacao_apresentacao = get_saudacao()
-    mensagem_apresentacao = f"{saudacao_apresentacao}! Me chamo {atendente['nome']} e estou aqui para lhe ajudar. 😊"
+    # CORRECAO (30/07/2026): revertido - a saudacao de horario (Bom dia/Boa
+    # tarde/Boa noite) ja foi dita pela Isabela no inicio da conversa. Como
+    # essa apresentacao acontece minutos (as vezes segundos) depois, dentro
+    # da MESMA conversa, repetir "Bom dia" de novo aqui soa estranho e
+    # redundante pro cliente. A atendente so precisa se apresentar, sem
+    # repetir a saudacao.
+    mensagem_apresentacao = f"Oi! Me chamo {atendente['nome']} e estou aqui para lhe ajudar. 😊"
     send(number, mensagem_apresentacao)
     inserir_mensagem_atendimento(conversa_id_criada, "atendente", mensagem_apresentacao)
 
