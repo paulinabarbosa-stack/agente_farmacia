@@ -2090,11 +2090,19 @@ def webhook():
 
             return "ok", 200
 
-        number = limpar_numero(msg.get("sender_pn"))
-        if not number:
-            number = limpar_numero(chat.get("wa_chatid"))
+        # CORRECAO (30/07/2026): antes, "sender_pn" era a primeira opcao pra
+        # identificar o numero do cliente - mas o WhatsApp atual pode
+        # retornar um sender_pn diferente do numero real da conversa
+        # (sistema de identificadores LID), o que fazia a Isabela responder
+        # a um numero errado (a mensagem gerada ia pro sender_pn, nao pro
+        # chatid de quem realmente estava conversando). Agora priorizamos
+        # chatid/wa_chatid, que representam de forma confiavel a conversa
+        # 1:1 em si, e usamos sender_pn so como ultimo recurso.
+        number = limpar_numero(chat.get("wa_chatid"))
         if not number:
             number = limpar_numero(msg.get("chatid"))
+        if not number:
+            number = limpar_numero(msg.get("sender_pn"))
 
         if numero_e_farmaceutico_teste(number):
             texto_farmaceutico = extrair_texto(msg) or ""
