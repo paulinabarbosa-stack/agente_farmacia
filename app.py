@@ -185,6 +185,30 @@ historico = {}
 # no meio do historico e perde peso), esse dado e reforcado em TODA
 # chamada a IA (ver ask_openai), nao so na primeira mensagem.
 nomes_conhecidos = {}
+
+# Mesma ideia do nomes_conhecidos, mas para endereco e forma de pagamento -
+# reforcados em toda mensagem para o FLUXO DE PEDIDO nao pedir de novo
+# depois de um desvio (ex: negociacao de desconto com atendente humano).
+enderecos_conhecidos = {}
+formas_pagamento_conhecidas = {}
+
+# Marcadores de controle interno que NUNCA podem ser mandados como texto
+# literal pro cliente - so fazem sentido dentro do fluxo principal do
+# webhook, que sabe interpreta-los antes de responder.
+MARCADORES_DE_CONTROLE = (
+    "TRANSFERIR_FARMACEUTICO", "TRANSFERIR_HUMANO", "TRANSFERIR_ENCOMENDA", "CONSULTAR_ENTREGA",
+)
+
+
+def contem_marcador_de_controle(texto):
+    """CORRECAO (30/07/2026): funcoes que mandam a resposta da IA direto pro
+    cliente sem passar pelo dispatcher do webhook (retomar_atendimento_com_ia,
+    oferecer_produto_proativamente) as vezes recebiam um marcador de
+    controle interno (ex: TRANSFERIR_HUMANO) como se fosse texto normal, e
+    mandavam isso cru pro cliente ler. Usada antes de qualquer send() nessas
+    funcoes, pra nunca deixar isso vazar."""
+    texto_upper = (texto or "").strip().upper()
+    return any(marcador in texto_upper for marcador in MARCADORES_DE_CONTROLE)
 mensagens_processadas = set()
 transferido = {}
 mensagens_farmaceutico = {}
@@ -1969,6 +1993,11 @@ def retomar_atendimento_com_ia(number):
             return
 
         reply = resultado["choices"][0]["message"]["content"]
+
+        if contem_marcador_de_controle(reply):
+            print(f"[AVISO] retomar_atendimento_com_ia gerou um marcador de controle em vez de mensagem pro cliente: {reply!r}")
+            reply = "Perfeito! Posso confirmar os dados do seu pedido pra gente finalizar? 😊"
+
         historico[number].append({"role": "assistant", "content": reply})
         send(number, reply)
         registrar_conversa(number, "[Retomado apos negociacao com atendente humano]", reply)
@@ -2546,6 +2575,9 @@ def webhook():
                                 unidade_id=unidade_id_escolhida,
                             )
             else:
+                if contem_marcador_de_controle(reply):
+                    print(f"[AVISO] Marcador de controle quase vazou pro cliente no fallback final: {reply!r}")
+                    reply = "Desculpe, pode repetir sua mensagem? Tive um probleminha aqui. 😊"
                 send(number, reply)
                 registrar_conversa(number, text, reply)
 
@@ -2713,6 +2745,10 @@ def ask_openai(number, text):
         if ultimo_pedido and ultimo_pedido.get("nome_cliente"):
             nome_conhecido = ultimo_pedido["nome_cliente"].strip().split(" ")[0]
             nomes_conhecidos[number] = nome_conhecido
+        if ultimo_pedido and ultimo_pedido.get("endereco"):
+            enderecos_conhecidos[number] = ultimo_pedido["endereco"]
+        if ultimo_pedido and ultimo_pedido.get("forma_pagamento"):
+            formas_pagamento_conhecidas[number] = ultimo_pedido["forma_pagamento"]
 
         if nome_conhecido:
             instrucao = (
@@ -2738,12 +2774,29 @@ def ask_openai(number, text):
     # transferir, mesmo ja sabendo. Repetir isso a cada chamada, direto no
     # prompt de sistema, da muito mais peso pra regra.
     nome_ja_conhecido = nomes_conhecidos.get(number)
+    endereco_ja_conhecido = enderecos_conhecidos.get(number)
+    forma_pagamento_ja_conhecida = formas_pagamento_conhecidas.get(number)
+
+    partes_reforco = []
     if nome_ja_conhecido:
+        partes_reforco.append(f"nome ({nome_ja_conhecido})")
+    if endereco_ja_conhecido:
+        partes_reforco.append(f"endereco ({endereco_ja_conhecido})")
+    if forma_pagamento_ja_conhecida:
+        partes_reforco.append(f"forma de pagamento ({forma_pagamento_ja_conhecida})")
+
+    if partes_reforco:
+        # CORRECAO (30/07/2026): antes so o nome era reforcado - o endereco e
+        # a forma de pagamento eram esquecidos depois de qualquer desvio na
+        # conversa (ex: negociacao de desconto com atendente humano), e o
+        # FLUXO DE PEDIDO voltava a pedir tudo do zero.
         instrucao += (
-            f" IMPORTANTE: o nome deste cliente ja e conhecido: {nome_ja_conhecido}. "
-            "Nunca pergunte o nome dele de novo, em nenhuma situacao (inclusive antes "
-            "de transferir para farmaceutico, atendente humano ou encomenda, e "
-            "inclusive no FLUXO DE PEDIDO OBRIGATORIO) - use esse nome diretamente."
+            " IMPORTANTE: os seguintes dados deste cliente ja sao conhecidos: "
+            + "; ".join(partes_reforco)
+            + ". NUNCA peca esses dados de novo (nem o nome antes de transferir, nem "
+            "endereco/forma de pagamento no FLUXO DE PEDIDO OBRIGATORIO) - use-os "
+            "diretamente, e peca so o que realmente faltar (por exemplo, o CPF) ou o "
+            "que o cliente disser que mudou."
         )
 
     messages = [{"role": "system", "content": instrucao}] + historico[number][-12:]
@@ -2808,6 +2861,11 @@ def oferecer_produto_proativamente(number):
             return
 
         reply = resultado["choices"][0]["message"]["content"]
+
+        if contem_marcador_de_controle(reply):
+            print(f"[AVISO] oferecer_produto_proativamente gerou um marcador de controle em vez de mensagem pro cliente: {reply!r}")
+            reply = "Perfeito! Posso confirmar os dados do seu pedido pra gente finalizar? 😊"
+
         historico[number].append({"role": "assistant", "content": reply})
         send(number, reply)
         registrar_conversa(number, "[Retomado apos orientacao do farmaceutico]", reply)
