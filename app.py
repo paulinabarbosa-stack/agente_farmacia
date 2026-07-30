@@ -2351,6 +2351,23 @@ def webhook():
             estagios_enviados[number] = set()
 
         reply = ask_openai(number, text)
+
+        # CORRECAO DEFINITIVA (30/07/2026): reforcar a regra so no texto do
+        # prompt nao foi suficiente - a IA insistiu em perguntar o nome de
+        # novo mesmo com a instrucao repetida em toda mensagem. Em vez de
+        # confiar so no prompt, INTERCEPTAMOS aqui em codigo: se a resposta
+        # for exatamente a pergunta padrao de nome e o sistema ja souber o
+        # nome desse cliente, forcamos uma nova chamada dizendo pra IA que
+        # o nome ja e conhecido e que ela deve decidir a transferencia
+        # agora, sem mandar a pergunta desnecessaria pro cliente.
+        if reply and nomes_conhecidos.get(number):
+            reply_normalizado = reply.strip().lower().replace("é", "e")
+            if "qual e o seu nome" in reply_normalizado:
+                print(f"[NOME JA CONHECIDO] Pergunta de nome desnecessaria interceptada para {number}")
+                nova_reply = forcar_transferencia_sem_pergunta_nome(number)
+                if nova_reply:
+                    reply = nova_reply
+
         if reply:
             if "TRANSFERIR_FARMACEUTICO" in reply:
                 nome_cliente_transferencia, pergunta_original = extrair_nome_e_pergunta_original(number)
@@ -2554,6 +2571,58 @@ def registrar_resposta_no_historico(number, texto):
     if number not in historico:
         historico[number] = []
     historico[number].append({"role": "assistant", "content": texto})
+
+
+def forcar_transferencia_sem_pergunta_nome(number):
+    """Chamada quando a IA tentou perguntar o nome do cliente de novo, mesmo
+    ja sabendo (nomes_conhecidos). Em vez de mandar essa pergunta
+    desnecessaria pro cliente, injeta um aviso direto e pede pra IA decidir
+    a transferencia de verdade agora - sem gerar nenhuma pergunta nova pro
+    cliente responder. Retorna a nova resposta, ou None se der erro (nesse
+    caso, o chamador mantem a resposta original como fallback)."""
+    if number not in historico:
+        return None
+
+    nome = nomes_conhecidos.get(number, "")
+    historico[number].append({
+        "role": "system",
+        "content": (
+            f"O nome do cliente ja e conhecido ({nome}) - ele NAO precisa "
+            "responder nada sobre isso, a pergunta que voce ia fazer sobre o "
+            "nome foi cancelada. Va direto para a decisao de transferencia: "
+            "responda AGORA e SOMENTE com uma destas palavras (a mais "
+            "adequada ao que o cliente pediu): TRANSFERIR_FARMACEUTICO, "
+            "TRANSFERIR_HUMANO ou TRANSFERIR_ENCOMENDA. Nao escreva mais "
+            "nada alem disso."
+        )
+    })
+
+    instrucao = SYSTEM_PROMPT + " Esta NAO e a primeira mensagem. NAO se apresente. Responda diretamente."
+    if nome:
+        instrucao += (
+            f" IMPORTANTE: o nome deste cliente ja e conhecido: {nome}. "
+            "Nunca pergunte o nome dele de novo."
+        )
+
+    messages = [{"role": "system", "content": instrucao}] + historico[number][-12:]
+    h = {"Authorization": "Bearer " + KEY, "Content-Type": "application/json"}
+    b = {"model": "gpt-4o-mini", "messages": messages}
+
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            json=b, headers=h, timeout=30
+        )
+        r.raise_for_status()
+        resultado = r.json()
+        if not resultado.get("choices"):
+            return None
+        nova_reply = resultado["choices"][0]["message"]["content"]
+        historico[number].append({"role": "assistant", "content": nova_reply})
+        return nova_reply
+    except Exception as e:
+        print("ERRO ao forcar transferencia sem pergunta de nome:", e)
+        return None
 
 
 def buscar_ultimo_pedido_cliente(number):
