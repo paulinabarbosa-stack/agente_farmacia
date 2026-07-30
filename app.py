@@ -178,6 +178,13 @@ REGRAS OBRIGATORIAS:
 - Use linguagem informal e acolhedora"""
 
 historico = {}
+
+# Nome do cliente ja conhecido nesta sessao do processo (number -> nome).
+# Preenchido tanto pelo lookup do ultimo pedido quanto pela captura durante
+# a transferencia. Diferente da mensagem de sistema (que fica "enterrada"
+# no meio do historico e perde peso), esse dado e reforcado em TODA
+# chamada a IA (ver ask_openai), nao so na primeira mensagem.
+nomes_conhecidos = {}
 mensagens_processadas = set()
 transferido = {}
 mensagens_farmaceutico = {}
@@ -775,15 +782,16 @@ def extrair_nome_e_pergunta_original(number):
 
 
 def registrar_nome_conhecido(number, nome):
-    """Grava na memoria da propria conversa (historico[number]) que o nome
-    do cliente ja foi informado durante a transferencia (farmaceutico,
-    humano ou encomenda). CORRECAO (29/07/2026): sem isso, quando a
-    conversa voltava pra Isabela fechar a venda, o FLUXO DE PEDIDO
-    OBRIGATORIO pedia nome/endereco/CPF/pagamento do zero, mesmo o cliente
-    ja tendo dito o nome minutos antes, na etapa "antes de te transferir,
-    qual e o seu nome?"."""
+    """Grava que o nome do cliente ja foi informado durante a transferencia
+    (farmaceutico, humano ou encomenda). CORRECAO (29/07/2026, reforcada em
+    30/07/2026): guarda em dois lugares - no historico (contexto da
+    conversa) E no dicionario nomes_conhecidos, que e reforcado em TODA
+    chamada a IA (nao so numa mensagem de sistema que pode perder peso no
+    meio da conversa). Sem isso, a Isabela as vezes voltava a perguntar o
+    nome de novo antes de transferir, mesmo ja sabendo."""
     if not nome:
         return
+    nomes_conhecidos[number] = nome
     if number not in historico:
         historico[number] = []
     historico[number].append({
@@ -2635,6 +2643,7 @@ def ask_openai(number, text):
         nome_conhecido = None
         if ultimo_pedido and ultimo_pedido.get("nome_cliente"):
             nome_conhecido = ultimo_pedido["nome_cliente"].strip().split(" ")[0]
+            nomes_conhecidos[number] = nome_conhecido
 
         if nome_conhecido:
             instrucao = (
@@ -2652,6 +2661,21 @@ def ask_openai(number, text):
             )
     else:
         instrucao = SYSTEM_PROMPT + " Esta NAO e a primeira mensagem. NAO se apresente. Responda diretamente."
+
+    # CORRECAO (30/07/2026): reforca o nome conhecido do cliente em TODA
+    # chamada a IA, nao so na primeira mensagem - uma unica mensagem de
+    # sistema no meio do historico (ver registrar_nome_conhecido) as vezes
+    # perdia peso e a Isabela voltava a perguntar o nome antes de
+    # transferir, mesmo ja sabendo. Repetir isso a cada chamada, direto no
+    # prompt de sistema, da muito mais peso pra regra.
+    nome_ja_conhecido = nomes_conhecidos.get(number)
+    if nome_ja_conhecido:
+        instrucao += (
+            f" IMPORTANTE: o nome deste cliente ja e conhecido: {nome_ja_conhecido}. "
+            "Nunca pergunte o nome dele de novo, em nenhuma situacao (inclusive antes "
+            "de transferir para farmaceutico, atendente humano ou encomenda, e "
+            "inclusive no FLUXO DE PEDIDO OBRIGATORIO) - use esse nome diretamente."
+        )
 
     messages = [{"role": "system", "content": instrucao}] + historico[number][-12:]
 
