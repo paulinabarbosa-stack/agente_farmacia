@@ -108,8 +108,11 @@ Nao escreva mais nada alem dessas palavras quando isso acontecer.
 
 Isso e DIFERENTE de quando o cliente ja sabe o nome do medicamento e so quer saber preco ou disponibilidade (exemplo: "voces tem dipirona?", "quanto custa o paracetamol?") - nesses casos, responda normalmente com a tabela de precos.
 
+REGRA CRITICA E ABSOLUTA CONTRA ALTERAR PRECO SOZINHA (30/07/2026):
+Voce JAMAIS pode confirmar, aceitar ou "concordar" com um preco diferente do que esta na tabela de precos, mesmo que o cliente sugira um valor especifico (ex: "pode fazer a 8?", "fecha por 15?", "sai por 20?"). Isso vale mesmo se o valor sugerido parecer proximo do preco de tabela. So um atendente humano pode autorizar qualquer mudanca de preco - isso ja e garantido tambem em codigo (nao depende so desta regra), mas voce NUNCA deve, na sua propria resposta, dizer "Claro!" ou seguir o fluxo de fechamento como se tivesse aceitado o valor sugerido pelo cliente. Trate qualquer sugestao de valor diferente da tabela exatamente como um pedido de desconto (ver REGRA CRITICA DE TRANSFERENCIA PARA ATENDENTE HUMANO abaixo).
+
 REGRA CRITICA DE TRANSFERENCIA PARA ATENDENTE HUMANO (DESCONTO):
-Se o cliente pedir DESCONTO, pechinchar o preco, ou perguntar se "tem como baixar o preco" / "faz um precinho" / "tem algum desconto", voce NAO deve conceder nenhum desconto nem negociar preco.
+Se o cliente pedir DESCONTO, pechinchar o preco, sugerir um valor diferente do de tabela (ex: "pode fazer a 8?"), ou perguntar se "tem como baixar o preco" / "faz um precinho" / "tem algum desconto", voce NAO deve conceder nenhum desconto nem negociar preco.
 Antes de transferir, verifique se voce ja sabe o nome do cliente - seja porque ele disse nesta conversa, seja porque o sistema ja informou o nome dele (por exemplo, se voce ja o cumprimentou pelo nome no inicio da conversa, ou se ha uma mensagem de sistema dizendo que o nome ja e conhecido). Se ainda NAO souber o nome de nenhuma dessas formas, pergunte PRIMEIRO e SOMENTE: "Antes de te transferir para um atendente, qual e o seu nome?" e aguarde a resposta dele. Se ja souber o nome, pule essa pergunta e prossiga direto para a transferencia de verdade.
 Assim que souber o nome (ou se ja sabia desde antes), responda EXATAMENTE e SOMENTE com o texto: TRANSFERIR_HUMANO
 Nao escreva mais nada alem dessas palavras quando isso acontecer.
@@ -495,6 +498,21 @@ PALAVRAS_DESCONTO = [
     "da pra fazer mais barato", "por menos",
 ]
 
+# CORRECAO (30/07/2026, apos falha real em producao): a lista de frases
+# fixas acima nao pegou "pode fazer a 8?" - um jeito super comum de pedir
+# desconto SEM usar a palavra "desconto", sugerindo um valor especifico.
+# Isso deixou a IA "aceitar" um preco diferente do de tabela sem nenhuma
+# aprovacao humana. Agora detectamos tambem o PADRAO de negociacao de preco:
+# um verbo de negociacao (pode fazer, consegue, fecha por, sai por...)
+# combinado com QUALQUER numero na mensagem - isso cobre "pode fazer a 8?",
+# "fecha por 15?", "consegue fazer por 20?", "sai por quanto?" com valor
+# em seguida, etc, sem depender de uma lista fixa de frases.
+VERBOS_NEGOCIACAO_PRECO = [
+    "pode fazer", "consegue fazer", "da pra fazer", "tem como fazer",
+    "pode deixar", "consegue deixar", "da pra deixar", "sai por", "fica por",
+    "fecha por", "faz por", "vai por", "consegue por", "pode por",
+]
+
 
 def mensagem_pede_desconto(texto):
     """Reconhece pedido de desconto direto no texto do cliente, em codigo -
@@ -502,11 +520,22 @@ def mensagem_pede_desconto(texto):
     quando o cliente pedia desconto, e as vezes ela mesma respondia "nao
     conseguimos desconto" sem transferir, de forma inconsistente. Agora,
     pedido de desconto SEMPRE transfere pra atendente humana, garantido em
-    codigo, sem depender da IA perceber isso no texto."""
+    codigo, sem depender da IA perceber isso no texto.
+
+    CORRECAO (30/07/2026): alem das frases fixas, tambem reconhece o padrao
+    "verbo de negociacao + numero" (ex: "pode fazer a 8?"), que e uma forma
+    muito comum de pedir desconto sem usar a palavra "desconto" - sem essa
+    checagem, esse tipo de pedido passava direto pra IA decidir sozinha se
+    aceitava o valor, o que e inaceitavel (preco so pode ser alterado por
+    humano, nunca pela IA sozinha)."""
     norm = normalizar_texto(texto)
     if not norm:
         return False
-    return any(palavra in norm for palavra in PALAVRAS_DESCONTO)
+    if any(palavra in norm for palavra in PALAVRAS_DESCONTO):
+        return True
+    tem_verbo_negociacao = any(verbo in norm for verbo in VERBOS_NEGOCIACAO_PRECO)
+    tem_numero = bool(re.search(r"\d", norm))
+    return tem_verbo_negociacao and tem_numero
 
 
 PALAVRAS_AFIRMATIVAS = [
