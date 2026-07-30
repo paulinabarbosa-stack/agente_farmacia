@@ -190,6 +190,15 @@ nomes_conhecidos = {}
 # reforcados em toda mensagem para o FLUXO DE PEDIDO nao pedir de novo
 # depois de um desvio (ex: negociacao de desconto com atendente humano).
 enderecos_conhecidos = {}
+
+# Valor unitario negociado manualmente com um cliente (number -> float),
+# usado pelo botao "Voltar para Isabela" quando a atendente humana concede
+# um desconto. CORRECAO (30/07/2026): antes, o desconto so existia como
+# texto livre no resumo, que a IA precisava "entender" e aplicar sozinha -
+# nao confiavel o suficiente para uma questao financeira. Agora, quando
+# preenchido, esse valor E APLICADO EM CODIGO na hora de fechar o pedido,
+# nao depende da IA fazer a conta certa.
+precos_negociados = {}
 formas_pagamento_conhecidas = {}
 
 # Marcadores de controle interno que NUNCA podem ser mandados como texto
@@ -2002,6 +2011,14 @@ def retomar_atendimento_com_ia(number):
         + " nesta conversa."
     )
 
+    valor_negociado_reforco = precos_negociados.get(number)
+    if valor_negociado_reforco:
+        instrucao += (
+            f" IMPORTANTE: o valor combinado com o cliente para este produto foi EXATAMENTE "
+            f"R$ {valor_negociado_reforco:.2f} - use esse valor, nao o preco de tabela, na sua "
+            "mensagem e no fechamento do pedido."
+        )
+
     messages = [{"role": "system", "content": instrucao}] + historico[number][-12:]
 
     h = {"Authorization": "Bearer " + KEY, "Content-Type": "application/json"}
@@ -2026,7 +2043,16 @@ def retomar_atendimento_com_ia(number):
 
         historico[number].append({"role": "assistant", "content": reply})
         send(number, reply)
-        registrar_conversa(number, "[Retomado apos negociacao com atendente humano]", reply)
+
+        # CORRECAO (30/07/2026, problema 2): antes essa linha do historico do
+        # painel usava sempre o mesmo texto generico entre colchetes, o que
+        # nao dava pra saber o que realmente foi negociado ao revisar depois.
+        # Agora mostra o valor combinado (quando houver), pra ficar visivel
+        # na tela de Historico/Conversas o motivo da mudanca de preco.
+        descricao_retomada = "[Retomado apos negociacao com atendente humano]"
+        if valor_negociado_reforco:
+            descricao_retomada = f"[Retomado apos negociacao - valor combinado: R$ {valor_negociado_reforco:.2f}]"
+        registrar_conversa(number, descricao_retomada, reply)
 
     except Exception as e:
         print("ERRO ao retomar atendimento com a IA:", e)
@@ -2056,6 +2082,7 @@ def voltar_para_ia_endpoint():
         telefone = data.get("telefone")
         conversa_id = data.get("conversa_id")
         resumo = (data.get("resumo") or "").strip()
+        valor_negociado_bruto = data.get("valor_negociado")
 
         if not telefone:
             return com_cors({"erro": "telefone e obrigatorio"}, 400)
@@ -2063,15 +2090,36 @@ def voltar_para_ia_endpoint():
         if telefone not in historico:
             historico[telefone] = []
 
-        if resumo:
+        valor_negociado = None
+        if valor_negociado_bruto not in (None, ""):
+            try:
+                valor_negociado = float(valor_negociado_bruto)
+                if valor_negociado > 0:
+                    precos_negociados[telefone] = valor_negociado
+            except (TypeError, ValueError):
+                print(f"[VOLTAR PARA IA] valor_negociado invalido recebido: {valor_negociado_bruto!r}")
+
+        if resumo or valor_negociado:
+            partes_resumo_sistema = []
+            if resumo:
+                partes_resumo_sistema.append(f'o resultado foi: "{resumo}"')
+            if valor_negociado:
+                # CORRECAO (30/07/2026): alem de avisar a IA (pra ela usar o
+                # valor certo na mensagem de confirmacao pro cliente), esse
+                # valor tambem e aplicado EM CODIGO na hora de fechar o
+                # pedido (ver o bloco que trata "Foi um prazer te atender"
+                # no webhook) - nao depende so da IA fazer a conta certa.
+                partes_resumo_sistema.append(
+                    f"o valor combinado para o produto foi EXATAMENTE R$ {valor_negociado:.2f} "
+                    "(em vez do preco de tabela)"
+                )
             historico[telefone].append({
                 "role": "system",
                 "content": (
-                    f"O atendente humano conversou com o cliente e o resultado foi: \"{resumo}\". "
+                    "O atendente humano conversou com o cliente e " + "; ".join(partes_resumo_sistema) + ". "
                     "Continue o atendimento a partir daqui, seguindo o FLUXO DE PEDIDO OBRIGATORIO, "
-                    "considerando esse resultado (por exemplo, aplicando um desconto combinado, se "
-                    "houver). Se o nome do cliente ja tiver sido informado nesta conversa, NAO peca "
-                    "de novo."
+                    "considerando esse resultado. Se o nome do cliente ja tiver sido informado nesta "
+                    "conversa, NAO peca de novo."
                 )
             })
 
@@ -2550,6 +2598,21 @@ def webhook():
                 dados_venda = extrair_dados_venda(number)
                 itens_pedido_extraidos = produtos_da_venda(dados_venda)
 
+                # CORRECAO DEFINITIVA (30/07/2026, problema financeiro): o
+                # valor negociado com o atendente humano e aplicado AQUI, em
+                # codigo, sobrescrevendo o preco de tabela que a IA tenha
+                # calculado - nao depende mais so da IA "entender" o desconto
+                # e fazer a conta certa sozinha. So aplica quando ha exatamente
+                # 1 item no carrinho (caso mais comum de negociacao); com
+                # varios itens, o valor negociado nao e aplicado automatico
+                # aqui (ambiguo a qual item se refere) e fica so como contexto
+                # pra IA. O valor e consumido (removido) depois de usado, pra
+                # nao vazar pra um pedido futuro desse mesmo numero.
+                valor_negociado_aplicar = precos_negociados.pop(number, None)
+                if valor_negociado_aplicar and len(itens_pedido_extraidos) == 1:
+                    print(f"[PRECO NEGOCIADO] Aplicando R$ {valor_negociado_aplicar:.2f} em codigo para {number}")
+                    itens_pedido_extraidos[0]["valor_unitario"] = valor_negociado_aplicar
+
                 if dados_venda and algum_item_controlado(itens_pedido_extraidos):
                     # CORRECAO DE SEGURANCA (28/07/2026): antes, so o primeiro
                     # produto do carrinho era checado - um pedido com 2+ itens
@@ -2860,6 +2923,14 @@ def ask_openai(number, text):
             "endereco/forma de pagamento no FLUXO DE PEDIDO OBRIGATORIO) - use-os "
             "diretamente, e peca so o que realmente faltar (por exemplo, o CPF) ou o "
             "que o cliente disser que mudou."
+        )
+
+    valor_negociado_reforco_msg = precos_negociados.get(number)
+    if valor_negociado_reforco_msg:
+        instrucao += (
+            f" IMPORTANTE: um atendente humano ja combinou com este cliente o valor de "
+            f"R$ {valor_negociado_reforco_msg:.2f} para o produto em negociacao (em vez do preco "
+            "de tabela). Use EXATAMENTE esse valor ao confirmar ou fechar esse pedido."
         )
 
     messages = [{"role": "system", "content": instrucao}] + historico[number][-12:]
