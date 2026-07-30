@@ -479,6 +479,27 @@ def e_mensagem_de_despedida(texto):
     return False
 
 
+PALAVRAS_DESCONTO = [
+    "desconto", "descontinho", "mais barato", "baixar o preco", "abaixar o preco",
+    "reduzir o preco", "reduzir o valor", "fazer um precinho", "consegue abaixar",
+    "tem como abaixar", "tem como diminuir", "diminuir o preco", "da pra baixar",
+    "da pra fazer mais barato", "por menos",
+]
+
+
+def mensagem_pede_desconto(texto):
+    """Reconhece pedido de desconto direto no texto do cliente, em codigo -
+    DECISAO (30/07/2026): antes a IA decidia sozinha se transferia ou nao
+    quando o cliente pedia desconto, e as vezes ela mesma respondia "nao
+    conseguimos desconto" sem transferir, de forma inconsistente. Agora,
+    pedido de desconto SEMPRE transfere pra atendente humana, garantido em
+    codigo, sem depender da IA perceber isso no texto."""
+    norm = normalizar_texto(texto)
+    if not norm:
+        return False
+    return any(palavra in norm for palavra in PALAVRAS_DESCONTO)
+
+
 PALAVRAS_AFIRMATIVAS = [
     "sim", "quero", "pode", "claro", "aceito", "adiciona", "vou querer",
     "uhum", "bora", "manda", "perfeito", "com certeza", "isso", "positivo",
@@ -2378,6 +2399,43 @@ def webhook():
             marcar_seguimento_respondido(number)
             ultima_mensagem_cliente[number] = datetime.now(pytz.timezone("America/Sao_Paulo"))
             estagios_enviados[number] = set()
+
+        # DECISAO (30/07/2026): pedido de desconto SEMPRE transfere pra
+        # atendente humana na hora, garantido em codigo - nao depende mais
+        # da IA decidir isso sozinha (ela as vezes respondia "nao
+        # conseguimos desconto" ao inves de transferir, de forma
+        # inconsistente). So dispara se essa conversa ainda nao estiver
+        # transferida (esta_transferido ja garantido False neste ponto).
+        if number and mensagem_pede_desconto(text):
+            print(f"[DESCONTO] Pedido de desconto detectado em codigo - transferindo direto: {number}")
+            nome_conhecido_desconto = nomes_conhecidos.get(number)
+            if not nome_conhecido_desconto:
+                nome_conhecido_desconto, _ = extrair_nome_e_pergunta_original(number)
+            registrar_nome_conhecido(number, nome_conhecido_desconto)
+
+            transferido[number] = True
+            mensagem_transferencia = (
+                "Poxa, eu não consigo fazer desconto por aqui, mas vou te conectar com "
+                "uma de nossas atendentes agora pra ver o que dá pra fazer, só um "
+                "momento! 😊"
+            )
+            send(number, mensagem_transferencia)
+            registrar_resposta_no_historico(number, mensagem_transferencia)
+
+            motivo_texto = "Cliente pediu desconto"
+            if nome_conhecido_desconto:
+                motivo_texto += f" - Nome: {nome_conhecido_desconto}"
+
+            conversa_id_criada = registrar_conversa(
+                number, text, mensagem_transferencia,
+                transferida=True,
+                motivo=motivo_texto,
+                retornar_id=True,
+            )
+            if conversa_id_criada:
+                conversa_ativa_id[number] = conversa_id_criada
+            transferir_com_distribuicao_automatica(number, conversa_id_criada)
+            return "ok", 200
 
         reply = ask_openai(number, text)
 
