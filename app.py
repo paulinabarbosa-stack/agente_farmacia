@@ -134,7 +134,8 @@ Quando o cliente quiser comprar, siga SEMPRE esta ordem:
 1. Confirme o produto e o preco
 2. Se o medicamento for um dos que EXIGEM RECEITA (ver REGRA IMPORTANTE SOBRE RECEITA MEDICA acima): avise que e necessario apresentar receita medica valida. Caso contrario, NAO mencione receita.
 3. Se houver uma mensagem de sistema no inicio desta conversa dizendo que esse cliente ja comprou antes (com nome/endereco/forma de pagamento conhecidos), confirme esses dados com ele numa unica mensagem curta (ex: "Posso confirmar a entrega no mesmo endereco de sempre, [endereco]?") e peca so o que estiver faltando (normalmente so o CPF, que nunca fica salvo). Se ele disser que mudou algo, peca o dado atualizado.
-   Se NAO houver essa informacao de cliente conhecido, peca TODAS as informacoes de uma vez so, numa unica mensagem:
+   Se houver uma mensagem de sistema dizendo que o cliente ja informou o nome dele durante a conversa (por exemplo, na transferencia para humano/farmaceutico), NAO peca o nome de novo - use o nome ja informado e peca so os demais dados que faltarem.
+   Se NAO houver nenhuma dessas informacoes, peca TODAS as informacoes de uma vez so, numa unica mensagem:
 "Para finalizar seu pedido, preciso de algumas informacoes:
 - Nome completo:
 - Endereco completo (rua, numero, bairro):
@@ -668,7 +669,8 @@ def transferir_com_distribuicao_automatica(number, conversa_id_criada):
     if not sucesso:
         return
 
-    mensagem_apresentacao = f"Ola, me chamo {atendente['nome']} e estou aqui para lhe ajudar. 😊"
+    saudacao_apresentacao = get_saudacao()
+    mensagem_apresentacao = f"{saudacao_apresentacao}! Me chamo {atendente['nome']} e estou aqui para lhe ajudar. 😊"
     send(number, mensagem_apresentacao)
     inserir_mensagem_atendimento(conversa_id_criada, "atendente", mensagem_apresentacao)
 
@@ -770,6 +772,30 @@ def extrair_nome_e_pergunta_original(number):
     except Exception as e:
         print("ERRO ao extrair nome e pergunta original:", e)
         return None, None
+
+
+def registrar_nome_conhecido(number, nome):
+    """Grava na memoria da propria conversa (historico[number]) que o nome
+    do cliente ja foi informado durante a transferencia (farmaceutico,
+    humano ou encomenda). CORRECAO (29/07/2026): sem isso, quando a
+    conversa voltava pra Isabela fechar a venda, o FLUXO DE PEDIDO
+    OBRIGATORIO pedia nome/endereco/CPF/pagamento do zero, mesmo o cliente
+    ja tendo dito o nome minutos antes, na etapa "antes de te transferir,
+    qual e o seu nome?"."""
+    if not nome:
+        return
+    if number not in historico:
+        historico[number] = []
+    historico[number].append({
+        "role": "system",
+        "content": (
+            f"O cliente ja informou o nome dele nesta conversa: {nome}. "
+            "Quando for pedir os dados para fechar um pedido (FLUXO DE PEDIDO "
+            "OBRIGATORIO), NAO peca o nome de novo - use esse nome que ja foi "
+            "informado. Peca so o que realmente ainda falta (endereco, CPF, "
+            "forma de pagamento)."
+        )
+    })
 
 
 def extrair_dados_venda(number):
@@ -1900,6 +1926,119 @@ def pedir_avaliacao_endpoint():
         return com_cors({"erro": str(e)}, 500)
 
 
+def retomar_atendimento_com_ia(number):
+    """Depois que um atendente humano devolve a conversa pra Isabela (via
+    /voltar-para-ia), gera proativamente a proxima mensagem dela SEM
+    esperar o cliente escrever de novo - mesmo padrao ja usado quando o
+    farmaceutico devolve a conversa via /voltarbot (oferecer_produto_proativamente)."""
+    if number not in historico:
+        return
+
+    instrucao = (
+        SYSTEM_PROMPT
+        + " O atendimento acabou de ser devolvido para voce depois de uma negociacao com um"
+        + " atendente humano (veja a mensagem de sistema mais recente no historico, com o resumo"
+        + " do que foi combinado - por exemplo, um desconto aceito). Continue o atendimento a"
+        + " partir dai, seguindo o FLUXO DE PEDIDO OBRIGATORIO, considerando o que foi combinado."
+        + " Nao se apresente novamente e nao peca informacoes que ja tenham sido informadas antes"
+        + " nesta conversa."
+    )
+
+    messages = [{"role": "system", "content": instrucao}] + historico[number][-12:]
+
+    h = {"Authorization": "Bearer " + KEY, "Content-Type": "application/json"}
+    b = {"model": "gpt-4o-mini", "messages": messages}
+
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            json=b, headers=h, timeout=30
+        )
+        r.raise_for_status()
+        resultado = r.json()
+
+        if not resultado.get("choices"):
+            return
+
+        reply = resultado["choices"][0]["message"]["content"]
+        historico[number].append({"role": "assistant", "content": reply})
+        send(number, reply)
+        registrar_conversa(number, "[Retomado apos negociacao com atendente humano]", reply)
+
+    except Exception as e:
+        print("ERRO ao retomar atendimento com a IA:", e)
+
+
+@app.route("/voltar-para-ia", methods=["POST", "OPTIONS"])
+def voltar_para_ia_endpoint():
+    """Endpoint chamado pela tela de Conversas quando a atendente clica em
+    'Voltar para Isabela' - devolve o atendimento pra IA fechar a venda
+    (por exemplo, apos negociar desconto), em vez de so encerrar o
+    atendimento e pedir avaliacao (que e o que /pedir-avaliacao faz)."""
+    if request.method == "OPTIONS":
+        resp = make_response()
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return resp
+
+    def com_cors(resposta_json, status=200):
+        resp = jsonify(resposta_json)
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.status_code = status
+        return resp
+
+    try:
+        data = request.json or {}
+        telefone = data.get("telefone")
+        conversa_id = data.get("conversa_id")
+        resumo = (data.get("resumo") or "").strip()
+
+        if not telefone:
+            return com_cors({"erro": "telefone e obrigatorio"}, 400)
+
+        if telefone not in historico:
+            historico[telefone] = []
+
+        if resumo:
+            historico[telefone].append({
+                "role": "system",
+                "content": (
+                    f"O atendente humano conversou com o cliente e o resultado foi: \"{resumo}\". "
+                    "Continue o atendimento a partir daqui, seguindo o FLUXO DE PEDIDO OBRIGATORIO, "
+                    "considerando esse resultado (por exemplo, aplicando um desconto combinado, se "
+                    "houver). Se o nome do cliente ja tiver sido informado nesta conversa, NAO peca "
+                    "de novo."
+                )
+            })
+
+        transferido[telefone] = False
+        mensagens_farmaceutico[telefone] = []
+        conversa_ativa_id.pop(telefone, None)
+
+        if conversa_id and SUPABASE_URL and SUPABASE_ANON_KEY:
+            headers = {
+                "apikey": SUPABASE_ANON_KEY,
+                "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+                "Content-Type": "application/json",
+            }
+            body = {
+                "atendimento_encerrado": True,
+                "atendimento_encerrado_em": datetime.now(pytz.utc).isoformat(),
+            }
+            requests.patch(
+                f"{SUPABASE_URL}/rest/v1/conversas?id=eq.{conversa_id}",
+                json=body, headers=headers, timeout=15
+            )
+
+        retomar_atendimento_com_ia(telefone)
+
+        return com_cors({"ok": True})
+    except Exception as e:
+        print("ERRO ao voltar atendimento para a IA:", e)
+        return com_cors({"erro": str(e)}, 500)
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     global ultimo_cliente_transferido
@@ -2199,6 +2338,7 @@ def webhook():
         if reply:
             if "TRANSFERIR_FARMACEUTICO" in reply:
                 nome_cliente_transferencia, pergunta_original = extrair_nome_e_pergunta_original(number)
+                registrar_nome_conhecido(number, nome_cliente_transferencia)
                 pergunta_para_exibir = pergunta_original or text
                 transferido[number] = True
                 mensagens_farmaceutico[number] = []
@@ -2233,6 +2373,7 @@ def webhook():
                 send(FARMACEUTICO_TESTE, resumo_para_farmaceutico)
             elif "TRANSFERIR_HUMANO" in reply:
                 nome_cliente_transferencia, pergunta_original = extrair_nome_e_pergunta_original(number)
+                registrar_nome_conhecido(number, nome_cliente_transferencia)
                 pergunta_para_exibir = pergunta_original or text
                 transferido[number] = True
                 print(f"CONVERSA TRANSFERIDA PARA ATENDENTE HUMANO (fila do painel): {number}")
@@ -2253,6 +2394,7 @@ def webhook():
                 transferir_com_distribuicao_automatica(number, conversa_id_criada)
             elif "TRANSFERIR_ENCOMENDA" in reply:
                 nome_cliente_transferencia, pergunta_original = extrair_nome_e_pergunta_original(number)
+                registrar_nome_conhecido(number, nome_cliente_transferencia)
                 pergunta_para_exibir = pergunta_original or text
                 transferido[number] = True
                 print(f"CONVERSA TRANSFERIDA PARA ATENDENTE HUMANO (encomenda, fila do painel): {number}")
@@ -2428,6 +2570,7 @@ def buscar_ultimo_pedido_cliente(number):
 
 def ask_openai(number, text):
     eh_conversa_nova = number not in historico
+    ultimo_pedido = None
     if eh_conversa_nova:
         historico[number] = []
 
@@ -2475,12 +2618,30 @@ def ask_openai(number, text):
     # corretamente se esta e a primeira vez que esse numero aparece nesta
     # sessao, independente de quantas mensagens de sistema foram injetadas.
     if eh_conversa_nova:
-        instrucao = (
-            SYSTEM_PROMPT
-            + f" Esta e a PRIMEIRA mensagem. Voce DEVE responder EXATAMENTE com:"
-            + f" {saudacao}! Sou a Isabela, atendente virtual da Farmacia Saude e Vida."
-            + f" Como posso te ajudar hoje? e nada mais."
-        )
+        # CORRECAO (29/07/2026): quando ja sabemos o nome do cliente (pedido
+        # anterior encontrado), a saudacao completa (Bom dia/Boa tarde/Boa
+        # noite) precisa continuar aparecendo, mesmo cumprimentando pelo
+        # nome - antes a IA as vezes pulava direto pro nome ("Ola, Fulano!")
+        # sem a saudacao, quando esse contexto de cliente conhecido entrava
+        # em jogo.
+        nome_conhecido = None
+        if ultimo_pedido and ultimo_pedido.get("nome_cliente"):
+            nome_conhecido = ultimo_pedido["nome_cliente"].strip().split(" ")[0]
+
+        if nome_conhecido:
+            instrucao = (
+                SYSTEM_PROMPT
+                + f" Esta e a PRIMEIRA mensagem. Voce DEVE responder EXATAMENTE com:"
+                + f" {saudacao}, {nome_conhecido}! Sou a Isabela, atendente virtual da Farmacia Saude e Vida."
+                + f" Como posso te ajudar hoje? e nada mais."
+            )
+        else:
+            instrucao = (
+                SYSTEM_PROMPT
+                + f" Esta e a PRIMEIRA mensagem. Voce DEVE responder EXATAMENTE com:"
+                + f" {saudacao}! Sou a Isabela, atendente virtual da Farmacia Saude e Vida."
+                + f" Como posso te ajudar hoje? e nada mais."
+            )
     else:
         instrucao = SYSTEM_PROMPT + " Esta NAO e a primeira mensagem. NAO se apresente. Responda diretamente."
 
