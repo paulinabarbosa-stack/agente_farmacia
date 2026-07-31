@@ -2003,7 +2003,7 @@ def webhook():
 
             texto_fromme = extrair_texto(msg) or ""
 
-if "/voltarbot" in texto_fromme.lower():
+            if "/voltarbot" in texto_fromme.lower():
                 if number:
                     resumo_lista = mensagens_farmaceutico.get(number, [])
                     resumo_inline = extrair_resumo_apos_comando(texto_fromme)
@@ -2030,12 +2030,6 @@ if "/voltarbot" in texto_fromme.lower():
                     if resumo_texto:
                         oferecer_produto_proativamente(number)
             elif "/assumir" in texto_fromme.lower():
-                # Comando manual: quem esta acompanhando o WhatsApp digita
-                # "/assumir" direto na conversa com o cliente, e a Isabela para
-                # de responder pra esse numero imediatamente - sem precisar de
-                # nenhum gatilho de transferencia decidido pela IA. A conversa
-                # aparece na tela Conversas como assumida manualmente. Para
-                # devolver, usa o /voltarbot ja existente, na mesma conversa.
                 if number:
                     transferido[number] = True
                     conversa_id_criada = registrar_conversa(
