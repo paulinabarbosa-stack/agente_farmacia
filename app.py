@@ -2402,27 +2402,37 @@ def webhook():
         if number in aguardando_oferta_complementar:
             oferta = aguardando_oferta_complementar.pop(number)
             dados_venda_original = oferta["dados_venda"]
-            produto_id_original = oferta["produto_id"]
+            itens_originais = oferta["itens_resolvidos"]
             complementar = oferta["complementar"]
 
             aceitou = e_resposta_afirmativa(text)
 
-            unidade_id = escolher_loja_para_produto(produto_id_original) if produto_id_original else None
+            itens_pedido = []
+            valor_total_pedido = 0.0
+            unidade_id_escolhida = None
 
-            quantidade_original = dados_venda_original.get("quantidade", 1)
-            valor_unit_original = dados_venda_original.get("valor_unitario", 0)
-            valor_total_pedido = round(float(quantidade_original) * float(valor_unit_original), 2)
-
-            registrar_venda(
-                number,
-                dados_venda_original.get("produto"),
-                quantidade_original,
-                valor_unit_original,
-                unidade_id=unidade_id,
-                produto_id=produto_id_original,
-            )
-
-            itens_pedido = [{"qtd": int(round(float(quantidade_original))), "produto": dados_venda_original.get("produto")}]
+            for item in itens_originais:
+                unidade_id_item = (
+                    escolher_loja_para_produto(item["produto_id"])
+                    if item["produto_id"] else None
+                )
+                if unidade_id_escolhida is None:
+                    unidade_id_escolhida = unidade_id_item
+                qtd = item.get("quantidade", 1)
+                valor_unit = item.get("valor_unitario", 0)
+                registrar_venda(
+                    number,
+                    item.get("produto"),
+                    qtd,
+                    valor_unit,
+                    unidade_id=unidade_id_item,
+                    produto_id=item["produto_id"],
+                )
+                itens_pedido.append({
+                    "qtd": int(round(float(qtd))),
+                    "produto": item.get("produto"),
+                })
+                valor_total_pedido += float(qtd) * float(valor_unit)
 
             if aceitou:
                 preco_complementar = complementar.get("preco") or 0
@@ -2431,7 +2441,7 @@ def webhook():
                     complementar.get("nome"),
                     1,
                     preco_complementar,
-                    unidade_id=unidade_id,
+                    unidade_id=unidade_id_escolhida,
                     produto_id=complementar.get("id"),
                 )
                 itens_pedido.append({"qtd": 1, "produto": complementar.get("nome")})
@@ -2443,8 +2453,8 @@ def webhook():
                 endereco=dados_venda_original.get("endereco"),
                 forma_pagamento=dados_venda_original.get("forma_pagamento"),
                 itens=itens_pedido,
-                valor_total=valor_total_pedido,
-                unidade_id=unidade_id,
+                valor_total=round(valor_total_pedido, 2),
+                unidade_id=unidade_id_escolhida,
             )
 
             mensagem_final = (
@@ -2673,9 +2683,10 @@ def webhook():
                     if complementar and complementar.get("nome"):
                         aguardando_oferta_complementar[number] = {
                             "dados_venda": dados_venda,
-                            "produto_id": produto_id_principal,
+                            "itens_resolvidos": itens_resolvidos,
                             "complementar": complementar,
                         }
+
                         preco_txt = ""
                         if complementar.get("preco"):
                             preco_formatado = f"{complementar['preco']:.2f}".replace(".", ",")
