@@ -1354,9 +1354,6 @@ def verificar_lembretes_recompra():
                 except Exception:
                     continue
 
-                # CORRECAO (31/07/2026): dias de duracao agora e multiplicado pela
-                # quantidade comprada - quem levou 2 caixas de algo que dura 30 dias
-                # tem a recompra prevista para 60 dias, nao 30.
                 quantidade_comprada = venda.get("quantidade") or 1
                 dias_duracao = int(dias_duracao_base) * int(quantidade_comprada)
 
@@ -1371,10 +1368,6 @@ def verificar_lembretes_recompra():
                 if not cliente_telefone:
                     continue
 
-                # CORRECAO (31/07/2026): agora manda dois lembretes (5 dias antes
-                # e 3 dias antes da previsao), cada um controlado separadamente
-                # pelo campo "estagio" na tabela lembretes_recompra, para nao
-                # mandar o mesmo estagio duas vezes nem pular o outro.
                 for antecedencia in DIAS_ANTECEDENCIAS_LEMBRETES:
                     estagio = f"{antecedencia}dias"
                     data_envio_lembrete = data_prevista_recompra - timedelta(days=antecedencia)
@@ -1804,12 +1797,9 @@ def excluir_acesso_endpoint():
         print("ERRO ao excluir acesso:", e)
         return com_cors({"erro": str(e)}, 500)
 
-        @app.route("/assumir-conversa", methods=["POST", "OPTIONS"])
+
+@app.route("/assumir-conversa", methods=["POST", "OPTIONS"])
 def assumir_conversa_endpoint():
-    """Endpoint chamado pelo botão 'Assumir conversa' na tela Conversas do
-    VidaFarma, quando um atendente quer tirar o controle da Isabela sem
-    precisar digitar /assumir no WhatsApp. Mesma logica do comando de texto,
-    só que acionavel pelo painel."""
     if request.method == "OPTIONS":
         resp = make_response()
         resp.headers["Access-Control-Allow-Origin"] = "*"
