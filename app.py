@@ -203,10 +203,6 @@ mensagens_farmaceutico = {}
 
 FARMACEUTICO_TESTE = "5538998552537"
 
-# Números de teste: vendas e pedidos feitos por esses números NÃO são
-# gravados de verdade no banco (não baixam estoque/lote real, não aparecem
-# em relatórios) - use para testar o fluxo completo da Isabela com segurança.
-# Adicione outros números aqui conforme precisar.
 NUMEROS_TESTE = {
     "553888172579",
 }
@@ -281,8 +277,7 @@ TABELA_PRECOS = {
 
 def buscar_preco_por_nome(nome_produto):
     """Busca o preco de referencia de um produto pelo nome, comparando com a
-    tabela de precos usada pela Isabela. Usado para saber quanto cobrar pelo
-    produto complementar sugerido, sem precisar consultar o banco."""
+    tabela de precos usada pela Isabela."""
     if not nome_produto:
         return None
     nome = nome_produto.lower()
@@ -297,8 +292,6 @@ def buscar_preco_por_nome(nome_produto):
 
 
 def eh_controlado(nome_produto):
-    """Verifica se o produto identificado na venda e um dos que exigem
-    receita medica, com base na lista de palavras-chave acima."""
     if not nome_produto:
         return False
     nome = nome_produto.lower()
@@ -314,8 +307,6 @@ def numero_e_farmaceutico_teste(number):
 
 
 def extrair_resumo_apos_comando(texto):
-    """Se o farmaceutico escrever, por exemplo,
-    '/voltarbot Recomendei Dipirona 500mg', retorna 'Recomendei Dipirona 500mg'."""
     idx = texto.lower().find("/voltarbot")
     if idx == -1:
         return ""
@@ -334,8 +325,6 @@ def get_saudacao():
 
 
 def baixar_audio(url):
-    """Baixa qualquer arquivo de midia do UAZAPI (audio, imagem etc), tentando
-    primeiro com o token e depois sem, ja que o comportamento pode variar."""
     headers_list = [
         {"token": TOKEN},
         {},
@@ -394,10 +383,6 @@ def extrair_texto(msg):
 
 
 def extrair_url_midia(msg):
-    """Extrai a URL de download de uma midia a partir do payload do UAZAPI.
-    Usado apenas como fallback para audio; para imagens, o caminho principal
-    e a funcao baixar_midia_uazapi(), que usa o endpoint oficial
-    /message/download (evita o link criptografado direto do WhatsApp)."""
     content = msg.get("content")
     url = None
     if isinstance(content, dict):
@@ -414,12 +399,6 @@ def extrair_url_midia(msg):
 
 
 def baixar_midia_uazapi(message_id):
-    """Usa o endpoint oficial da UAZAPI (/message/download) para baixar uma
-    midia (imagem, audio etc) ja decodificada, a partir do ID completo da
-    mensagem (formato owner:messageid, que e o proprio msg['id']). Isso evita
-    lidar com o link criptografado direto do WhatsApp (mmg.whatsapp.net), que
-    nao funciona como arquivo de verdade sem decodificacao. Retorna os bytes
-    do arquivo, ou None se falhar."""
     if not BASE or not TOKEN or not message_id:
         return None
     try:
@@ -471,8 +450,6 @@ def normalizar_texto(texto):
 
 
 def e_mensagem_de_despedida(texto):
-    """Reconhece agradecimentos/despedidas curtas para nao ficar respondendo
-    a toa depois que o atendimento ja foi encerrado."""
     norm = normalizar_texto(texto)
     if not norm or len(norm) > 25:
         return False
@@ -497,19 +474,6 @@ VERBOS_NEGOCIACAO_PRECO = [
 
 
 def mensagem_pede_desconto(texto):
-    """Reconhece pedido de desconto direto no texto do cliente, em codigo -
-    DECISAO (30/07/2026): antes a IA decidia sozinha se transferia ou nao
-    quando o cliente pedia desconto, e as vezes ela mesma respondia "nao
-    conseguimos desconto" sem transferir, de forma inconsistente. Agora,
-    pedido de desconto SEMPRE transfere pra atendente humana, garantido em
-    codigo, sem depender da IA perceber isso no texto.
-
-    CORRECAO (30/07/2026): alem das frases fixas, tambem reconhece o padrao
-    "verbo de negociacao + numero" (ex: "pode fazer a 8?"), que e uma forma
-    muito comum de pedir desconto sem usar a palavra "desconto" - sem essa
-    checagem, esse tipo de pedido passava direto pra IA decidir sozinha se
-    aceitava o valor, o que e inaceitavel (preco so pode ser alterado por
-    humano, nunca pela IA sozinha)."""
     norm = normalizar_texto(texto)
     if not norm:
         return False
@@ -527,8 +491,6 @@ PALAVRAS_AFIRMATIVAS = [
 
 
 def e_resposta_afirmativa(texto):
-    """Reconhece uma resposta afirmativa curta (usado para saber se o
-    cliente aceitou a oferta de produto complementar)."""
     norm = normalizar_texto(texto)
     if not norm:
         return False
@@ -537,7 +499,8 @@ def e_resposta_afirmativa(texto):
             return True
     return False
 
-    PALAVRAS_NEGATIVAS = [
+
+PALAVRAS_NEGATIVAS = [
     "nao", "não", "n", "dispensa", "so isso", "só isso", "sem isso",
     "nao quero", "não quero", "deixa pra la", "deixa pra lá",
     "nao precisa", "não precisa", "pode deixar", "nem precisa",
@@ -547,7 +510,8 @@ def e_resposta_afirmativa(texto):
 def e_resposta_negativa(texto):
     """Reconhece uma resposta claramente negativa (recusa explícita) à
     oferta de produto complementar - diferente de uma resposta ambígua
-    ou pergunta, que não deve ser tratada como recusa."""
+    ou pergunta (ex: 'quanto fica tudo?'), que NAO deve ser tratada como
+    recusa nem fechar o pedido automaticamente."""
     norm = normalizar_texto(texto)
     if not norm:
         return False
@@ -620,8 +584,6 @@ def marcar_seguimento_respondido(number):
 
 
 def salvar_nota_avaliacao(conversa_id, nota):
-    """Grava a nota de avaliacao (1 a 5) do cliente na linha da tabela
-    conversas correspondente ao atendimento avaliado."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY or not conversa_id:
         return
     try:
@@ -672,11 +634,6 @@ def registrar_conversa(number, mensagem, resposta, transferida=False, motivo=Non
 
 
 def escolher_atendente_menos_ocupada():
-    """Escolhe, entre as atendentes ativas e que nao estao em pausa agora,
-    quem tem menos atendimentos em andamento no momento (distribuicao
-    automatica por carga, nao por ordem fixa). Em caso de empate, a
-    escolha e aleatoria entre as empatadas, para nao favorecer sempre a
-    mesma pessoa. Retorna {"id", "nome"} ou None se ninguem disponivel."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return None
     try:
@@ -716,9 +673,6 @@ def escolher_atendente_menos_ocupada():
 
 
 def atribuir_atendente_automaticamente(conversa_id, atendente_id):
-    """Marca a conversa como ja assumida pela atendente escolhida
-    automaticamente, pulando o status 'aberta' - a conversa entra direto
-    como 'em atendimento' na tela Conversas."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY or not conversa_id:
         return False
     try:
@@ -742,12 +696,6 @@ def atribuir_atendente_automaticamente(conversa_id, atendente_id):
 
 
 def transferir_com_distribuicao_automatica(number, conversa_id_criada):
-    """Depois de criar a conversa transferida para a fila humana, tenta
-    distribuir automaticamente para a atendente disponivel com menos
-    atendimentos em andamento agora. Se conseguir, ja manda a mensagem de
-    apresentacao pro cliente (igual acontece quando alguem assume
-    manualmente pela tela). Se ninguem estiver disponivel, a conversa
-    fica como 'aberta' na fila, esperando alguem assumir manualmente."""
     if not conversa_id_criada:
         return
 
@@ -766,13 +714,6 @@ def transferir_com_distribuicao_automatica(number, conversa_id_criada):
 
 
 def buscar_conversa_humana_ativa(number):
-    """Verifica no Supabase se existe uma conversa transferida para humano
-    e ainda nao encerrada para esse telefone. Serve de fonte da verdade
-    além da memória do processo (dicionario transferido/conversa_ativa_id),
-    que se perde toda vez que o Railway reinicia ou faz um redeploy - sem
-    isso, um atendimento em andamento "esquecia" que estava transferido
-    assim que o servidor reiniciava, e a Isabela reiniciava a conversa do
-    zero com o cliente."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return None
     try:
@@ -799,9 +740,6 @@ def buscar_conversa_humana_ativa(number):
 
 
 def inserir_mensagem_atendimento(conversa_id, remetente, texto):
-    """Grava uma mensagem no historico de thread de um atendimento (usado
-    tanto para a resposta da atendente quanto para as mensagens que o
-    cliente manda de volta durante o atendimento humano)."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY or not conversa_id:
         return
     try:
@@ -821,11 +759,6 @@ def inserir_mensagem_atendimento(conversa_id, remetente, texto):
 
 
 def extrair_nome_e_pergunta_original(number):
-    """Usa a IA para identificar, dentro do historico da conversa, o nome que
-    o cliente informou quando perguntado antes da transferencia, E a
-    pergunta/pedido original do cliente que motivou a transferencia (a
-    mensagem de ANTES do pedido de nome, nao a resposta com o nome em si).
-    Retorna (nome, pergunta_original), qualquer um podendo ser None."""
     if number not in historico:
         return None, None
 
@@ -865,8 +798,6 @@ def extrair_nome_e_pergunta_original(number):
 
 
 def registrar_nome_conhecido(number, nome):
-    """Grava que o nome do cliente ja foi informado durante a transferencia
-    (farmaceutico, humano ou encomenda)."""
     if not nome:
         return
     nomes_conhecidos[number] = nome
@@ -885,10 +816,6 @@ def registrar_nome_conhecido(number, nome):
 
 
 def extrair_dados_venda(number):
-    """Extrai os dados do pedido que acabou de ser fechado. IMPORTANTE: o
-    pedido pode ter MAIS DE UM PRODUTO (ex: cliente pede Nimesulida e
-    Amoxicilina na mesma conversa) - por isso o retorno sempre traz uma
-    LISTA em "produtos", nunca um produto unico solto."""
     if number not in historico:
         return None
 
@@ -927,9 +854,6 @@ def extrair_dados_venda(number):
 
 
 def produtos_da_venda(dados_venda):
-    """Retorna sempre uma lista de itens do pedido (cada um com produto/
-    quantidade/valor_unitario), a partir do dados_venda retornado por
-    extrair_dados_venda."""
     if not dados_venda:
         return []
     itens = dados_venda.get("produtos")
@@ -939,12 +863,10 @@ def produtos_da_venda(dados_venda):
 
 
 def algum_item_controlado(itens):
-    """Verifica TODOS os itens do carrinho, nao so o primeiro."""
     return any(eh_controlado(item.get("produto")) for item in itens)
 
 
 def formatar_lista_itens(itens):
-    """Monta uma descricao legivel do carrinho."""
     partes = []
     for item in itens:
         qtd = item.get("quantidade", 1)
@@ -953,8 +875,6 @@ def formatar_lista_itens(itens):
 
 
 def extrair_dados_receita(image_bytes):
-    """Usa a IA de visao para ler a foto da receita e extrair os dados
-    necessarios para o lancamento posterior no SNGPC (via HOS)."""
     try:
         b64 = base64.b64encode(image_bytes).decode("utf-8")
         instrucao = (
@@ -1005,8 +925,6 @@ def extrair_dados_receita(image_bytes):
 
 
 def subir_foto_receita(image_bytes, number):
-    """Envia a foto da receita para o bucket 'receitas' no Supabase Storage
-    e retorna a URL publica da imagem, ou None se falhar."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return None
     try:
@@ -1031,8 +949,6 @@ def subir_foto_receita(image_bytes, number):
 
 
 def salvar_receita_pendente(number, dados_venda, dados_receita, foto_url):
-    """Grava no Supabase o registro da receita aguardando aprovacao do
-    farmaceutico, com os dados do pedido e os dados extraidos da receita."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return
     try:
@@ -1073,8 +989,6 @@ def salvar_receita_pendente(number, dados_venda, dados_receita, foto_url):
 
 
 def notificar_farmaceutico_receita_pendente(number, dados_venda):
-    """Manda um aviso curto para o farmaceutico informando que ha uma
-    receita nova aguardando revisao no sistema."""
     itens = produtos_da_venda(dados_venda)
     descricao = formatar_lista_itens(itens) or dados_venda.get("produto", "medicamento controlado")
     mensagem = (
@@ -1087,8 +1001,6 @@ def notificar_farmaceutico_receita_pendente(number, dados_venda):
 
 
 def buscar_produto_complementar(produto_id):
-    """Busca na tabela produtos_associados se existe algum produto marcado
-    como 'complementar' para o produto informado."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY or not produto_id:
         return None
     try:
@@ -1118,8 +1030,6 @@ def buscar_produto_complementar(produto_id):
 
 
 def buscar_produto_por_nome(nome_produto):
-    """Tenta encontrar o produto correspondente na tabela produtos, usando
-    busca aproximada pela primeira palavra do nome."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY or not nome_produto:
         return None
     try:
@@ -1143,8 +1053,6 @@ def buscar_produto_por_nome(nome_produto):
 
 
 def escolher_loja_para_produto(produto_id):
-    """Consulta a tabela estoque e escolhe, entre as lojas que tem estoque
-    disponivel (quantidade > 0) para o produto, a de maior prioridade."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY or not produto_id:
         return None
     try:
@@ -1178,7 +1086,6 @@ def escolher_loja_para_produto(produto_id):
 
 
 def registrar_venda(number, produto, quantidade, valor_unitario, unidade_id=None, produto_id=None):
-    """Grava no Supabase a venda fechada pela Isabela."""
     if numero_e_teste(number):
         print(f"[MODO TESTE] Venda NAO gravada (numero de teste {number}): produto={produto}, qtd={quantidade}")
         return
@@ -1214,8 +1121,6 @@ def registrar_venda(number, produto, quantidade, valor_unitario, unidade_id=None
 
 
 def criar_pedido(number, dados_venda, unidade_id=None):
-    """Cria o registro do pedido de entrega no Supabase, ja vinculado a
-    loja escolhida, logo apos a venda ser fechada pela Isabela."""
     if numero_e_teste(number):
         print(f"[MODO TESTE] Pedido NAO gravado (numero de teste {number})")
         return
@@ -1251,9 +1156,6 @@ def criar_pedido(number, dados_venda, unidade_id=None):
 
 
 def criar_pedido_com_itens(number, nome_cliente, endereco, forma_pagamento, itens, valor_total, unidade_id=None):
-    """Igual a criar_pedido, mas aceita uma lista de itens e um valor total
-    ja calculados - usado quando o cliente aceita levar tambem um produto
-    complementar junto com a compra original."""
     if numero_e_teste(number):
         print(f"[MODO TESTE] Pedido NAO gravado (numero de teste {number})")
         return
@@ -1284,7 +1186,6 @@ def criar_pedido_com_itens(number, nome_cliente, endereco, forma_pagamento, iten
 
 
 def formatar_hora_br(iso_str):
-    """Converte um timestamp ISO do Supabase para horario de Brasilia (HH:MM)."""
     try:
         texto = iso_str.replace("Z", "+00:00")
         dt = datetime.fromisoformat(texto)
@@ -1517,7 +1418,6 @@ def buscar_reaberturas_pendentes():
 
 
 def reabrir_conversa(conversa_id):
-    """Volta a conversa para o estado 'aberta' no painel."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY or not conversa_id:
         return False
     try:
@@ -1682,8 +1582,6 @@ def aprovar_receita_endpoint():
 
 @app.route("/recusar-receita", methods=["POST", "OPTIONS"])
 def recusar_receita_endpoint():
-    """Endpoint chamado pela tela Receitas Pendentes quando o farmaceutico
-    recusa uma receita."""
     if request.method == "OPTIONS":
         resp = make_response()
         resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -1756,8 +1654,6 @@ def recusar_receita_endpoint():
 
 @app.route("/responder-atendimento", methods=["POST", "OPTIONS"])
 def responder_atendimento_endpoint():
-    """Endpoint usado pela tela de Conversas do VidaFarma para a atendente
-    humana enviar uma mensagem de verdade pro cliente, via UAZAPI."""
     if request.method == "OPTIONS":
         resp = make_response()
         resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -1794,7 +1690,6 @@ def responder_atendimento_endpoint():
 
 @app.route("/criar-acesso", methods=["POST", "OPTIONS"])
 def criar_acesso_endpoint():
-    """Cria um login individual (Supabase Auth) + o perfil correspondente."""
     if request.method == "OPTIONS":
         resp = make_response()
         resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -1862,7 +1757,6 @@ def criar_acesso_endpoint():
 
 @app.route("/excluir-acesso", methods=["POST", "OPTIONS"])
 def excluir_acesso_endpoint():
-    """Exclui um login individual (Supabase Auth)."""
     if request.method == "OPTIONS":
         resp = make_response()
         resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -1903,8 +1797,6 @@ def excluir_acesso_endpoint():
 
 @app.route("/pedir-avaliacao", methods=["POST", "OPTIONS"])
 def pedir_avaliacao_endpoint():
-    """Endpoint usado pela tela de Conversas do VidaFarma quando a atendente
-    clica em 'Encerrar atendimento'."""
     if request.method == "OPTIONS":
         resp = make_response()
         resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -1945,8 +1837,6 @@ def pedir_avaliacao_endpoint():
 
 
 def retomar_atendimento_com_ia(number):
-    """Depois que um atendente humano devolve a conversa pra Isabela, gera
-    proativamente a proxima mensagem dela."""
     if number not in historico:
         return
 
@@ -2004,8 +1894,6 @@ def retomar_atendimento_com_ia(number):
 
 @app.route("/voltar-para-ia", methods=["POST", "OPTIONS"])
 def voltar_para_ia_endpoint():
-    """Endpoint chamado pela tela de Conversas quando a atendente clica em
-    'Voltar para Isabela'."""
     if request.method == "OPTIONS":
         resp = make_response()
         resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -2305,12 +2193,6 @@ def webhook():
             recusou = e_resposta_negativa(text)
 
             if not aceitou and not recusou:
-                # CORRECAO (31/07/2026): resposta ambigua (ex: "fica quanto?")
-                # estava sendo tratada como recusa e fechando o pedido na
-                # hora, sem o cliente ter decidido de verdade. Agora, se nao
-                # for nem sim nem nao reconhecivel, respondemos a duvida
-                # (preco do complementar) e continuamos aguardando uma
-                # resposta clara, sem fechar nada ainda.
                 preco_complementar = complementar.get("preco")
                 preco_txt = f"R$ {preco_complementar:.2f}".replace(".", ",") if preco_complementar else "consultar"
                 mensagem_esclarecimento = (
@@ -2629,16 +2511,12 @@ def webhook():
 
 
 def registrar_resposta_no_historico(number, texto):
-    """Registra na memoria da propria IA (historico[number]) uma mensagem
-    que foi enviada pro cliente por fora do ask_openai()."""
     if number not in historico:
         historico[number] = []
     historico[number].append({"role": "assistant", "content": texto})
 
 
 def forcar_transferencia_sem_pergunta_nome(number):
-    """Chamada quando a IA tentou perguntar o nome do cliente de novo, mesmo
-    ja sabendo (nomes_conhecidos)."""
     if number not in historico:
         return None
 
@@ -2685,7 +2563,6 @@ def forcar_transferencia_sem_pergunta_nome(number):
 
 
 def buscar_ultimo_pedido_cliente(number):
-    """Busca o pedido mais recente desse telefone."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return None
     try:
