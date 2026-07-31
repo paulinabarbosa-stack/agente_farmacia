@@ -2203,11 +2203,25 @@ def webhook():
             aceitou = e_resposta_afirmativa(text)
             recusou = e_resposta_negativa(text)
 
-            if not aceitou and not recusou:
-                preco_complementar = complementar.get("preco")
-                preco_txt = f"R$ {preco_complementar:.2f}".replace(".", ",") if preco_complementar else "consultar"
+           if not aceitou and not recusou:
+                # CORRECAO (31/07/2026): antes so informava o preco do
+                # complementar isolado, mesmo quando o cliente perguntava o
+                # valor total do pedido (ex: "quanto fica tudo junto?"). Agora
+                # calcula e informa o valor total do carrinho original, e
+                # tambem o total caso o complementar seja incluido.
+                valor_total_original = sum(
+                    float(item.get("quantidade", 1)) * float(item.get("valor_unitario", 0))
+                    for item in itens_originais
+                )
+                preco_complementar = complementar.get("preco") or 0
+                valor_total_com_complementar = valor_total_original + float(preco_complementar)
+
+                valor_original_txt = f"R$ {valor_total_original:.2f}".replace(".", ",")
+                valor_com_complementar_txt = f"R$ {valor_total_com_complementar:.2f}".replace(".", ",")
+
                 mensagem_esclarecimento = (
-                    f"O {complementar['nome']} sai por {preco_txt}. Quer incluir no pedido? 😊"
+                    f"Seu pedido fica {valor_original_txt}. Se incluir o {complementar['nome']} "
+                    f"também, o total fica {valor_com_complementar_txt}. Quer incluir? 😊"
                 )
                 send(number, mensagem_esclarecimento)
                 registrar_resposta_no_historico(number, mensagem_esclarecimento)
