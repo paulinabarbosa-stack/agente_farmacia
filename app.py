@@ -1267,7 +1267,7 @@ def verificar_seguimentos():
         time.sleep(30)
 
 
-DIAS_ANTECEDENCIA_LEMBRETE = 3
+DIAS_ANTECEDENCIAS_LEMBRETES = [5, 3]
 
 
 def buscar_vendas_uso_continuo():
@@ -1296,7 +1296,7 @@ def buscar_vendas_uso_continuo():
         return []
 
 
-def ja_foi_lembrado(venda_id):
+def ja_foi_lembrado(venda_id, estagio):
     if not SUPABASE_URL or not SUPABASE_ANON_KEY or not venda_id:
         return True
     try:
@@ -1304,7 +1304,7 @@ def ja_foi_lembrado(venda_id):
             "apikey": SUPABASE_ANON_KEY,
             "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
         }
-        params = f"venda_id=eq.{venda_id}&select=id&limit=1"
+        params = f"venda_id=eq.{venda_id}&estagio=eq.{estagio}&select=id&limit=1"
         r = requests.get(f"{SUPABASE_URL}/rest/v1/lembretes_recompra?{params}", headers=headers, timeout=15)
         dados = r.json()
         return bool(dados)
@@ -1313,7 +1313,7 @@ def ja_foi_lembrado(venda_id):
         return True
 
 
-def registrar_lembrete_enviado(cliente_telefone, produto_id, venda_id):
+def registrar_lembrete_enviado(cliente_telefone, produto_id, venda_id, estagio):
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return
     try:
@@ -1326,6 +1326,7 @@ def registrar_lembrete_enviado(cliente_telefone, produto_id, venda_id):
             "cliente_telefone": cliente_telefone,
             "produto_id": produto_id,
             "venda_id": venda_id,
+            "estagio": estagio,
         }
         requests.post(f"{SUPABASE_URL}/rest/v1/lembretes_recompra", json=body, headers=headers, timeout=15)
     except Exception as e:
@@ -1342,9 +1343,9 @@ def verificar_lembretes_recompra():
 
             for venda in vendas:
                 produto_info = venda.get("produtos") or {}
-                dias_duracao = produto_info.get("dias_duracao_estimados")
-                print(f"[DEBUG LEMBRETE] Venda {venda.get('id')} - produto: {produto_info.get('nome')} - dias_duracao: {dias_duracao}")
-                if not dias_duracao:
+                dias_duracao_base = produto_info.get("dias_duracao_estimados")
+                print(f"[DEBUG LEMBRETE] Venda {venda.get('id')} - produto: {produto_info.get('nome')} - dias_duracao_base: {dias_duracao_base}")
+                if not dias_duracao_base:
                     continue
 
                 data_venda_str = venda.get("data_venda", "")
@@ -1353,33 +1354,44 @@ def verificar_lembretes_recompra():
                 except Exception:
                     continue
 
+                # CORRECAO (31/07/2026): dias de duracao agora e multiplicado pela
+                # quantidade comprada - quem levou 2 caixas de algo que dura 30 dias
+                # tem a recompra prevista para 60 dias, nao 30.
+                quantidade_comprada = venda.get("quantidade") or 1
+                dias_duracao = int(dias_duracao_base) * int(quantidade_comprada)
+
                 data_venda_sp = data_venda.astimezone(pytz.timezone("America/Sao_Paulo")).date()
-                data_prevista_recompra = data_venda_sp + timedelta(days=int(dias_duracao))
-                data_envio_lembrete = data_prevista_recompra - timedelta(days=DIAS_ANTECEDENCIA_LEMBRETE)
-                print(f"[DEBUG LEMBRETE] data_venda: {data_venda_sp} | previsao: {data_prevista_recompra} | envia a partir de: {data_envio_lembrete}")
-
-                if hoje < data_envio_lembrete or hoje > data_prevista_recompra:
-                    print("[DEBUG LEMBRETE] Fora da janela de envio, pulando.")
-                    continue
-
-                venda_id = venda.get("id")
-                if ja_foi_lembrado(venda_id):
-                    continue
+                data_prevista_recompra = data_venda_sp + timedelta(days=dias_duracao)
 
                 cliente_telefone = venda.get("cliente_telefone")
                 produto_id = venda.get("produto_id")
                 nome_produto = produto_info.get("nome", "seu medicamento")
+                venda_id = venda.get("id")
 
                 if not cliente_telefone:
                     continue
 
-                mensagem = (
-                    f"Oi! Passando para lembrar que seu {nome_produto} deve estar acabando em breve. "
-                    f"Quer que eu já separe uma nova caixa para você? 😊"
-                )
-                send(cliente_telefone, mensagem)
-                registrar_lembrete_enviado(cliente_telefone, produto_id, venda_id)
-                print(f"[LEMBRETE RECOMPRA] Enviado para {cliente_telefone} - {nome_produto}")
+                # CORRECAO (31/07/2026): agora manda dois lembretes (5 dias antes
+                # e 3 dias antes da previsao), cada um controlado separadamente
+                # pelo campo "estagio" na tabela lembretes_recompra, para nao
+                # mandar o mesmo estagio duas vezes nem pular o outro.
+                for antecedencia in DIAS_ANTECEDENCIAS_LEMBRETES:
+                    estagio = f"{antecedencia}dias"
+                    data_envio_lembrete = data_prevista_recompra - timedelta(days=antecedencia)
+
+                    if hoje != data_envio_lembrete:
+                        continue
+
+                    if ja_foi_lembrado(venda_id, estagio):
+                        continue
+
+                    mensagem = (
+                        f"Oi! Passando para lembrar que seu {nome_produto} deve estar acabando em "
+                        f"{antecedencia} dias. Quer que eu já separe uma nova caixa para você? 😊"
+                    )
+                    send(cliente_telefone, mensagem)
+                    registrar_lembrete_enviado(cliente_telefone, produto_id, venda_id, estagio)
+                    print(f"[LEMBRETE RECOMPRA] Estagio {estagio} enviado para {cliente_telefone} - {nome_produto}")
 
         except Exception as e:
             print("ERRO no verificador de lembretes de recompra:", e)
