@@ -510,19 +510,6 @@ FRASES_NEGATIVAS = [
 
 
 def e_resposta_negativa(texto):
-    """Reconhece uma resposta claramente negativa (recusa explícita) à
-    oferta de produto complementar - diferente de uma resposta ambígua
-    ou pergunta (ex: 'quanto fica tudo?'), que NAO deve ser tratada como
-    recusa nem fechar o pedido automaticamente.
-
-    CORRECAO (31/07/2026): a versao anterior verificava "n" como
-    substring dentro do texto inteiro (ex: "n" in "quanto fica tudo"),
-    o que da positivo porque a palavra "quanto" contem a letra "n" -
-    isso fazia qualquer mensagem com um "n" em qualquer lugar ser
-    tratada como recusa, fechando o pedido sem o cliente ter decidido.
-    Agora "nao"/"não"/"n" so contam quando aparecem como PALAVRA INTEIRA
-    (separada por espaco), nao como substring solta dentro de outra
-    palavra."""
     norm = normalizar_texto(texto)
     if not norm:
         return False
@@ -2195,69 +2182,6 @@ def webhook():
             return "ok", 200
 
         if number in aguardando_oferta_complementar:
-            oferta = aguardando_oferta_complementar[number]
-            dados_venda_original = oferta["dados_venda"]
-            itens_originais = oferta["itens_resolvidos"]
-            complementar = oferta["complementar"]
-
-            aceitou = e_resposta_afirmativa(text)
-            recusou = e_resposta_negativa(text)
-
-           if not aceitou and not recusou:
-                # CORRECAO (31/07/2026): antes so informava o preco do
-                # complementar isolado, mesmo quando o cliente perguntava o
-                # valor total do pedido (ex: "quanto fica tudo junto?"). Agora
-                # calcula e informa o valor total do carrinho original, e
-                # tambem o total caso o complementar seja incluido.
-                valor_total_original = sum(
-                    float(item.get("quantidade", 1)) * float(item.get("valor_unitario", 0))
-                    for item in itens_originais
-                )
-                preco_complementar = complementar.get("preco") or 0
-                valor_total_com_complementar = valor_total_original + float(preco_complementar)
-
-                valor_original_txt = f"R$ {valor_total_original:.2f}".replace(".", ",")
-                valor_com_complementar_txt = f"R$ {valor_total_com_complementar:.2f}".replace(".", ",")
-
-                mensagem_esclarecimento = (
-                    f"Seu pedido fica {valor_original_txt}. Se incluir o {complementar['nome']} "
-                    f"também, o total fica {valor_com_complementar_txt}. Quer incluir? 😊"
-                )
-                send(number, mensagem_esclarecimento)
-                registrar_resposta_no_historico(number, mensagem_esclarecimento)
-                registrar_conversa(number, text, mensagem_esclarecimento)
-                return "ok", 200
-
-            aguardando_oferta_complementar.pop(number)
-
-            itens_pedido = []
-            valor_total_pedido = 0.0
-            unidade_id_escolhida = None
-
-            for item in itens_originais:
-                unidade_id_item = (
-                    escolher_loja_para_produto(item["produto_id"])
-                    if item["produto_id"] else None
-                )
-                if unidade_id_escolhida is None:
-                    unidade_id_escolhida = unidade_id_item
-                qtd = item.get("quantidade", 1)
-                valor_unit = item.get("valor_unitario", 0)
-                registrar_venda(
-                    number,
-                    item.get("produto"),
-                    qtd,
-                    valor_unit,
-                    unidade_id=unidade_id_item,
-                    produto_id=item["produto_id"],
-                )
-                itens_pedido.append({
-                    "qtd": int(round(float(qtd))),
-                    "produto": item.get("produto"),
-                })
-                valor_total_pedido += float(qtd) * float(valor_unit)
-
-           if number in aguardando_oferta_complementar:
             oferta = aguardando_oferta_complementar[number]
             dados_venda_original = oferta["dados_venda"]
             itens_originais = oferta["itens_resolvidos"]
