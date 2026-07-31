@@ -147,8 +147,11 @@ Quando o cliente quiser comprar, siga SEMPRE esta ordem:
 - CPF:
 - Forma de pagamento (Pix, cartao de credito, cartao de debito ou dinheiro):"
 4. Aguarde o cliente responder com todos os dados
-5. Confirme o resumo do pedido com todos os dados e valor total
+5. Confirme o resumo do pedido com todos os dados e valor total, seguindo a REGRA CRITICA DE TAXA DE ENTREGA abaixo
 6. Finalize com a mensagem de encerramento abaixo
+
+REGRA CRITICA DE TAXA DE ENTREGA (31/07/2026):
+Se o valor total dos produtos do pedido (antes de qualquer taxa) for MENOR que R$ 15,00, informe ao cliente, junto com o resumo do pedido, que sera cobrada uma taxa de entrega de R$ 3,50, e inclua esse valor no total final informado a ele (ex: "Seu pedido de produtos fica R$ 12,00 + R$ 3,50 de taxa de entrega = R$ 15,50"). Se o valor dos produtos ja for R$ 15,00 ou mais, NAO cobre nem mencione taxa de entrega nenhuma.
 
 MENSAGEM DE ENCERRAMENTO OBRIGATORIA:
 Sempre que o atendimento for encerrado (pedido finalizado, duvida resolvida ou cliente se despedir), envie EXATAMENTE:
@@ -275,6 +278,19 @@ TABELA_PRECOS = {
     "fio dental (50m)": 7.90,
     "escova dental": 12.90,
 }
+
+VALOR_MINIMO_SEM_TAXA_ENTREGA = 15.00
+TAXA_ENTREGA = 3.50
+
+
+def aplicar_taxa_entrega(itens_pedido, valor_total_pedido):
+    """Adiciona a taxa de entrega como item do pedido quando o subtotal fica
+    abaixo do valor minimo (R$ 15,00) - decisao repassada pelo Henrique
+    (31/07/2026). Retorna os itens atualizados e o novo valor total."""
+    if valor_total_pedido < VALOR_MINIMO_SEM_TAXA_ENTREGA:
+        itens_pedido.append({"qtd": 1, "produto": "Taxa de entrega"})
+        valor_total_pedido = round(valor_total_pedido + TAXA_ENTREGA, 2)
+    return itens_pedido, valor_total_pedido
 
 
 def buscar_preco_por_nome(nome_produto):
@@ -1555,6 +1571,8 @@ def aprovar_receita_endpoint():
             itens_pedido.append({"qtd": int(round(float(qtd))), "produto": item.get("produto")})
             valor_total_pedido += float(qtd) * float(valor_unit)
 
+        itens_pedido, valor_total_pedido = aplicar_taxa_entrega(itens_pedido, valor_total_pedido)
+
         criar_pedido_com_itens(
             number,
             nome_cliente=nome_cliente,
@@ -2281,6 +2299,8 @@ def webhook():
                 itens_pedido.append({"qtd": 1, "produto": complementar.get("nome")})
                 valor_total_pedido = round(valor_total_pedido + float(preco_complementar), 2)
 
+            itens_pedido, valor_total_pedido = aplicar_taxa_entrega(itens_pedido, valor_total_pedido)
+
             criar_pedido_com_itens(number, nome_cliente=dados_venda_original.get("nome_cliente"), endereco=dados_venda_original.get("endereco"), forma_pagamento=dados_venda_original.get("forma_pagamento"), itens=itens_pedido, valor_total=round(valor_total_pedido, 2), unidade_id=unidade_id_escolhida)
 
             mensagem_final = (
@@ -2515,6 +2535,8 @@ def webhook():
                                     "produto": item.get("produto"),
                                 })
                                 valor_total_pedido += float(qtd) * float(valor_unit)
+
+                            itens_pedido, valor_total_pedido = aplicar_taxa_entrega(itens_pedido, valor_total_pedido)
 
                             criar_pedido_com_itens(
                                 number,
