@@ -136,7 +136,7 @@ FLUXO DE PEDIDO OBRIGATORIO:
 Quando o cliente quiser comprar, siga SEMPRE esta ordem:
 1. Confirme o produto e o preco
 2. Se o medicamento for um dos que EXIGEM RECEITA (ver REGRA IMPORTANTE SOBRE RECEITA MEDICA acima): avise que e necessario apresentar receita medica valida. Caso contrario, NAO mencione receita.
-3. RETIRADA NO BALCAO: se o cliente disser que vai buscar/retirar pessoalmente (ex: "vou passar ai buscar", "eu mesmo busco", "vou retirar", "passo ai"), NAO peca endereco nenhum - o pedido e para retirada, nao entrega. Nesse caso peca so nome completo, CPF (se ainda nao informado nesta conversa) e forma de pagamento.
+3. RETIRADA NO BALCAO: NUNCA pergunte explicitamente ao cliente se ele quer entrega ou retirada (ex: nunca pergunte algo como "voce prefere que a gente entregue ou vai buscar ai?"). Assuma SEMPRE que e entrega por padrao, a menos que o cliente diga espontaneamente que vai buscar/retirar pessoalmente (ex: "vou passar ai buscar", "eu mesmo busco", "vou retirar", "passo ai"). Se ele disser isso, NAO peca endereco nenhum - o pedido e para retirada, nao entrega. Nesse caso peca so nome completo, CPF (se ainda nao informado nesta conversa) e forma de pagamento.
    Se houver uma mensagem de sistema no inicio desta conversa dizendo que esse cliente ja comprou antes (com nome/endereco conhecidos) E o pedido for para ENTREGA (nao for retirada), confirme nome e endereco com ele numa mensagem curta (ex: "Posso confirmar a entrega no mesmo endereco de sempre, [endereco]?"). Se ele disser que mudou algo, peca o dado atualizado.
    FORMA DE PAGAMENTO: NUNCA assuma ou reutilize a forma de pagamento de uma compra anterior automaticamente. Pergunte SEMPRE, de forma explicita, qual sera a forma de pagamento desta vez (Pix, cartao de credito, cartao de debito ou dinheiro), mesmo que o cliente ja tenha usado uma forma de pagamento antes.
    CPF: se o cliente ja informou o CPF em algum momento ANTERIOR desta MESMA conversa, apenas confirme esse CPF com ele (ex: "seu CPF e 123.456.789-00, certo?") em vez de pedir de novo. Se ele ainda nao informou o CPF nesta conversa, peca normalmente (o CPF nunca fica salvo entre conversas diferentes).
@@ -153,12 +153,13 @@ Quando o cliente quiser comprar, siga SEMPRE esta ordem:
 - CPF:
 - Forma de pagamento (Pix, cartao de credito, cartao de debito ou dinheiro):"
 4. Aguarde o cliente responder com todos os dados
-5. Confirme o resumo do pedido com todos os dados e valor total, seguindo a REGRA CRITICA DE TAXA DE ENTREGA abaixo
-6. Finalize com a mensagem de encerramento abaixo
+5. Confirme o resumo do pedido com todos os dados e o valor total dos PRODUTOS (sem taxa nenhuma nessa mensagem)
+6. Se for ENTREGA e a REGRA CRITICA DE TAXA DE ENTREGA abaixo se aplicar, informe a taxa em uma mensagem SEPARADA (proprio paragrafo, apos o resumo, nunca misturada na mesma frase do valor dos produtos)
+7. Finalize com a mensagem de encerramento abaixo
 
 REGRA CRITICA DE TAXA DE ENTREGA (31/07/2026):
 A taxa de entrega SO se aplica quando o pedido for para ENTREGA (nao para retirada no balcao). Se for RETIRADA, NUNCA cobre nem mencione taxa de entrega, independente do valor do pedido.
-Se for ENTREGA e o valor total dos produtos do pedido (antes de qualquer taxa) for MENOR que R$ 15,00, informe ao cliente, junto com o resumo do pedido, que sera cobrada uma taxa de entrega de R$ 3,50, e inclua esse valor no total final informado a ele (ex: "Seu pedido de produtos fica R$ 12,00 + R$ 3,50 de taxa de entrega = R$ 15,50"). Se o valor dos produtos ja for R$ 15,00 ou mais, NAO cobre nem mencione taxa de entrega nenhuma.
+Se for ENTREGA e o valor total dos produtos do pedido (antes de qualquer taxa) for MENOR que R$ 15,00, informe a taxa de entrega de R$ 3,50 em uma mensagem OU PARAGRAFO SEPARADO do resumo do pedido - nunca na mesma frase que informa o valor dos produtos. Por exemplo, primeiro confirme "Seu pedido de produtos fica R$ 12,00.", e so depois, em uma linha separada: "Como o valor ficou abaixo de R$ 15,00, sera cobrada uma taxa de entrega de R$ 3,50, ficando o total em R$ 15,50." Se o valor dos produtos ja for R$ 15,00 ou mais, NAO cobre nem mencione taxa de entrega nenhuma.
 
 MENSAGEM DE ENCERRAMENTO OBRIGATORIA:
 Sempre que o atendimento for encerrado (pedido finalizado, duvida resolvida ou cliente se despedir), envie EXATAMENTE (trocando so a primeira linha conforme for entrega ou retirada):
@@ -2345,11 +2346,22 @@ def webhook():
                 itens_pedido.append({"qtd": 1, "produto": complementar.get("nome")})
                 valor_total_pedido = round(valor_total_pedido + float(preco_complementar), 2)
 
+            eh_retirada_atual = pedido_retirada.get(number, False)
+            valor_antes_taxa = valor_total_pedido
             itens_pedido, valor_total_pedido = aplicar_taxa_entrega(
-                itens_pedido, valor_total_pedido, eh_retirada=pedido_retirada.get(number, False)
+                itens_pedido, valor_total_pedido, eh_retirada=eh_retirada_atual
             )
 
             criar_pedido_com_itens(number, nome_cliente=dados_venda_original.get("nome_cliente"), endereco=dados_venda_original.get("endereco"), forma_pagamento=dados_venda_original.get("forma_pagamento"), itens=itens_pedido, valor_total=round(valor_total_pedido, 2), unidade_id=unidade_id_escolhida)
+
+            if not eh_retirada_atual and valor_total_pedido > valor_antes_taxa:
+                valor_txt = f"R$ {valor_total_pedido:.2f}".replace(".", ",")
+                mensagem_taxa = (
+                    f"Como o valor do pedido ficou abaixo de R$ 15,00, sera cobrada uma taxa de "
+                    f"entrega de R$ 3,50, ficando o total em {valor_txt}. 😊"
+                )
+                send(number, mensagem_taxa)
+                registrar_resposta_no_historico(number, mensagem_taxa)
 
             mensagem_final = (
                 "Seu pedido foi registrado! Pode passar na farmacia para retirar quando preferir. "
@@ -2357,7 +2369,7 @@ def webhook():
                 "Que tal deixar uma avaliacao para nos ajudar a melhorar?\n"
                 "⭐ Farmacia Saude e Vida: https://search.google.com/local/writereview?placeid=ChIJAQBsTgC5rgARK0oiw3CQOpg\n\n"
                 "Obrigada pela preferencia! Volte sempre. 💙"
-            ) if pedido_retirada.get(number, False) else (
+            ) if eh_retirada_atual else (
                 "Seu pedido foi registrado e a entrega ja esta sendo providenciada! "
                 "Foi um prazer te atender! 😊\n\n"
                 "Que tal deixar uma avaliacao para nos ajudar a melhorar?\n"
@@ -2562,8 +2574,7 @@ def webhook():
                     else:
                         send(number, reply)
                         registrar_conversa(number, text, reply)
-                        encerrado[number] = True
-                        print(f"CONVERSA ENCERRADA (aguardando so despedidas): {number}")
+
                         if itens_resolvidos:
                             itens_pedido = []
                             valor_total_pedido = 0.0
@@ -2591,8 +2602,10 @@ def webhook():
                                 })
                                 valor_total_pedido += float(qtd) * float(valor_unit)
 
+                            eh_retirada_atual = pedido_retirada.get(number, False)
+                            valor_antes_taxa = valor_total_pedido
                             itens_pedido, valor_total_pedido = aplicar_taxa_entrega(
-                                itens_pedido, valor_total_pedido, eh_retirada=pedido_retirada.get(number, False)
+                                itens_pedido, valor_total_pedido, eh_retirada=eh_retirada_atual
                             )
 
                             criar_pedido_com_itens(
@@ -2604,7 +2617,20 @@ def webhook():
                                 valor_total=round(valor_total_pedido, 2),
                                 unidade_id=unidade_id_escolhida,
                             )
+
+                            if not eh_retirada_atual and valor_total_pedido > valor_antes_taxa:
+                                valor_txt = f"R$ {valor_total_pedido:.2f}".replace(".", ",")
+                                mensagem_taxa = (
+                                    f"Como o valor do pedido ficou abaixo de R$ 15,00, sera cobrada uma "
+                                    f"taxa de entrega de R$ 3,50, ficando o total em {valor_txt}. 😊"
+                                )
+                                send(number, mensagem_taxa)
+                                registrar_resposta_no_historico(number, mensagem_taxa)
+                                registrar_conversa(number, "[Taxa de entrega informada]", mensagem_taxa)
+
+                        encerrado[number] = True
                         pedido_retirada.pop(number, None)
+                        print(f"CONVERSA ENCERRADA (aguardando so despedidas): {number}")
             else:
                 if contem_marcador_de_controle(reply):
                     print(f"[AVISO] Marcador de controle quase vazou pro cliente no fallback final: {reply!r}")
