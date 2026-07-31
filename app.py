@@ -537,6 +537,25 @@ def e_resposta_afirmativa(texto):
             return True
     return False
 
+    PALAVRAS_NEGATIVAS = [
+    "nao", "não", "n", "dispensa", "so isso", "só isso", "sem isso",
+    "nao quero", "não quero", "deixa pra la", "deixa pra lá",
+    "nao precisa", "não precisa", "pode deixar", "nem precisa",
+]
+
+
+def e_resposta_negativa(texto):
+    """Reconhece uma resposta claramente negativa (recusa explícita) à
+    oferta de produto complementar - diferente de uma resposta ambígua
+    ou pergunta, que não deve ser tratada como recusa."""
+    norm = normalizar_texto(texto)
+    if not norm:
+        return False
+    for p in PALAVRAS_NEGATIVAS:
+        if p in norm:
+            return True
+    return False
+
 
 ultima_mensagem_cliente = {}
 estagios_enviados = {}
@@ -2277,12 +2296,32 @@ def webhook():
             return "ok", 200
 
         if number in aguardando_oferta_complementar:
-            oferta = aguardando_oferta_complementar.pop(number)
+            oferta = aguardando_oferta_complementar[number]
             dados_venda_original = oferta["dados_venda"]
             itens_originais = oferta["itens_resolvidos"]
             complementar = oferta["complementar"]
 
             aceitou = e_resposta_afirmativa(text)
+            recusou = e_resposta_negativa(text)
+
+            if not aceitou and not recusou:
+                # CORRECAO (31/07/2026): resposta ambigua (ex: "fica quanto?")
+                # estava sendo tratada como recusa e fechando o pedido na
+                # hora, sem o cliente ter decidido de verdade. Agora, se nao
+                # for nem sim nem nao reconhecivel, respondemos a duvida
+                # (preco do complementar) e continuamos aguardando uma
+                # resposta clara, sem fechar nada ainda.
+                preco_complementar = complementar.get("preco")
+                preco_txt = f"R$ {preco_complementar:.2f}".replace(".", ",") if preco_complementar else "consultar"
+                mensagem_esclarecimento = (
+                    f"O {complementar['nome']} sai por {preco_txt}. Quer incluir no pedido? 😊"
+                )
+                send(number, mensagem_esclarecimento)
+                registrar_resposta_no_historico(number, mensagem_esclarecimento)
+                registrar_conversa(number, text, mensagem_esclarecimento)
+                return "ok", 200
+
+            aguardando_oferta_complementar.pop(number)
 
             itens_pedido = []
             valor_total_pedido = 0.0
