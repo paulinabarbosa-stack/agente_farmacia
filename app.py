@@ -2257,28 +2257,50 @@ def webhook():
                 })
                 valor_total_pedido += float(qtd) * float(valor_unit)
 
+           if number in aguardando_oferta_complementar:
+            oferta = aguardando_oferta_complementar[number]
+            dados_venda_original = oferta["dados_venda"]
+            itens_originais = oferta["itens_resolvidos"]
+            complementar = oferta["complementar"]
+
+            aceitou = e_resposta_afirmativa(text)
+            recusou = e_resposta_negativa(text)
+
+            if not aceitou and not recusou:
+                valor_total_original = sum(float(item.get("quantidade", 1)) * float(item.get("valor_unitario", 0)) for item in itens_originais)
+                preco_complementar = complementar.get("preco") or 0
+                valor_total_com_complementar = valor_total_original + float(preco_complementar)
+                valor_original_txt = f"R$ {valor_total_original:.2f}".replace(".", ",")
+                valor_com_complementar_txt = f"R$ {valor_total_com_complementar:.2f}".replace(".", ",")
+                mensagem_esclarecimento = f"Seu pedido fica {valor_original_txt}. Se incluir o {complementar['nome']} também, o total fica {valor_com_complementar_txt}. Quer incluir? 😊"
+                send(number, mensagem_esclarecimento)
+                registrar_resposta_no_historico(number, mensagem_esclarecimento)
+                registrar_conversa(number, text, mensagem_esclarecimento)
+                return "ok", 200
+
+            aguardando_oferta_complementar.pop(number)
+
+            itens_pedido = []
+            valor_total_pedido = 0.0
+            unidade_id_escolhida = None
+
+            for item in itens_originais:
+                unidade_id_item = escolher_loja_para_produto(item["produto_id"]) if item["produto_id"] else None
+                if unidade_id_escolhida is None:
+                    unidade_id_escolhida = unidade_id_item
+                qtd = item.get("quantidade", 1)
+                valor_unit = item.get("valor_unitario", 0)
+                registrar_venda(number, item.get("produto"), qtd, valor_unit, unidade_id=unidade_id_item, produto_id=item["produto_id"])
+                itens_pedido.append({"qtd": int(round(float(qtd))), "produto": item.get("produto")})
+                valor_total_pedido += float(qtd) * float(valor_unit)
+
             if aceitou:
                 preco_complementar = complementar.get("preco") or 0
-                registrar_venda(
-                    number,
-                    complementar.get("nome"),
-                    1,
-                    preco_complementar,
-                    unidade_id=unidade_id_escolhida,
-                    produto_id=complementar.get("id"),
-                )
+                registrar_venda(number, complementar.get("nome"), 1, preco_complementar, unidade_id=unidade_id_escolhida, produto_id=complementar.get("id"))
                 itens_pedido.append({"qtd": 1, "produto": complementar.get("nome")})
                 valor_total_pedido = round(valor_total_pedido + float(preco_complementar), 2)
 
-            criar_pedido_com_itens(
-                number,
-                nome_cliente=dados_venda_original.get("nome_cliente"),
-                endereco=dados_venda_original.get("endereco"),
-                forma_pagamento=dados_venda_original.get("forma_pagamento"),
-                itens=itens_pedido,
-                valor_total=round(valor_total_pedido, 2),
-                unidade_id=unidade_id_escolhida,
-            )
+            criar_pedido_com_itens(number, nome_cliente=dados_venda_original.get("nome_cliente"), endereco=dados_venda_original.get("endereco"), forma_pagamento=dados_venda_original.get("forma_pagamento"), itens=itens_pedido, valor_total=round(valor_total_pedido, 2), unidade_id=unidade_id_escolhida)
 
             mensagem_final = (
                 "Seu pedido foi registrado e a entrega ja esta sendo providenciada! "
