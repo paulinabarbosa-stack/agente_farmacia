@@ -1804,6 +1804,49 @@ def excluir_acesso_endpoint():
         print("ERRO ao excluir acesso:", e)
         return com_cors({"erro": str(e)}, 500)
 
+        @app.route("/assumir-conversa", methods=["POST", "OPTIONS"])
+def assumir_conversa_endpoint():
+    """Endpoint chamado pelo botão 'Assumir conversa' na tela Conversas do
+    VidaFarma, quando um atendente quer tirar o controle da Isabela sem
+    precisar digitar /assumir no WhatsApp. Mesma logica do comando de texto,
+    só que acionavel pelo painel."""
+    if request.method == "OPTIONS":
+        resp = make_response()
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return resp
+
+    def com_cors(resposta_json, status=200):
+        resp = jsonify(resposta_json)
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.status_code = status
+        return resp
+
+    try:
+        data = request.json or {}
+        telefone = data.get("telefone")
+
+        if not telefone:
+            return com_cors({"erro": "telefone e obrigatorio"}, 400)
+
+        transferido[telefone] = True
+        conversa_id_criada = registrar_conversa(
+            telefone, "[Conversa assumida manualmente]", "",
+            transferida=True,
+            motivo="Assumida manualmente por atendente",
+            retornar_id=True,
+        )
+        if conversa_id_criada:
+            conversa_ativa_id[telefone] = conversa_id_criada
+
+        print(f"CONVERSA ASSUMIDA MANUALMENTE (via painel): {telefone}")
+
+        return com_cors({"ok": True, "conversa_id": conversa_id_criada})
+    except Exception as e:
+        print("ERRO ao assumir conversa manualmente:", e)
+        return com_cors({"erro": str(e)}, 500)
+
 
 @app.route("/pedir-avaliacao", methods=["POST", "OPTIONS"])
 def pedir_avaliacao_endpoint():
