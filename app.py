@@ -136,7 +136,9 @@ FLUXO DE PEDIDO OBRIGATORIO:
 Quando o cliente quiser comprar, siga SEMPRE esta ordem:
 1. Confirme o produto e o preco
 2. Se o medicamento for um dos que EXIGEM RECEITA (ver REGRA IMPORTANTE SOBRE RECEITA MEDICA acima): avise que e necessario apresentar receita medica valida. Caso contrario, NAO mencione receita.
-3. Se houver uma mensagem de sistema no inicio desta conversa dizendo que esse cliente ja comprou antes (com nome/endereco/forma de pagamento conhecidos), confirme esses dados com ele numa unica mensagem curta (ex: "Posso confirmar a entrega no mesmo endereco de sempre, [endereco]?") e peca so o que estiver faltando (normalmente so o CPF, que nunca fica salvo). Se ele disser que mudou algo, peca o dado atualizado.
+3. Se houver uma mensagem de sistema no inicio desta conversa dizendo que esse cliente ja comprou antes (com nome/endereco conhecidos), confirme nome e endereco com ele numa mensagem curta (ex: "Posso confirmar a entrega no mesmo endereco de sempre, [endereco]?"). Se ele disser que mudou algo, peca o dado atualizado.
+   FORMA DE PAGAMENTO: NUNCA assuma ou reutilize a forma de pagamento de uma compra anterior automaticamente. Pergunte SEMPRE, de forma explicita, qual sera a forma de pagamento desta vez (Pix, cartao de credito, cartao de debito ou dinheiro), mesmo que o cliente ja tenha usado uma forma de pagamento antes.
+   CPF: se o cliente ja informou o CPF em algum momento ANTERIOR desta MESMA conversa, apenas confirme esse CPF com ele (ex: "seu CPF e 123.456.789-00, certo?") em vez de pedir de novo. Se ele ainda nao informou o CPF nesta conversa, peca normalmente (o CPF nunca fica salvo entre conversas diferentes).
    Se houver uma mensagem de sistema dizendo que o cliente ja informou o nome dele durante a conversa (por exemplo, na transferencia para humano/farmaceutico), NAO peca o nome de novo - use o nome ja informado e peca so os demais dados que faltarem.
    Se NAO houver nenhuma dessas informacoes, peca TODAS as informacoes de uma vez so, numa unica mensagem:
 "Para finalizar seu pedido, preciso de algumas informacoes:
@@ -276,8 +278,6 @@ TABELA_PRECOS = {
 
 
 def buscar_preco_por_nome(nome_produto):
-    """Busca o preco de referencia de um produto pelo nome, comparando com a
-    tabela de precos usada pela Isabela."""
     if not nome_produto:
         return None
     nome = nome_produto.lower()
@@ -500,8 +500,10 @@ def e_resposta_afirmativa(texto):
     return False
 
 
-PALAVRAS_NEGATIVAS = [
-    "nao", "não", "n", "dispensa", "so isso", "só isso", "sem isso",
+PALAVRAS_NEGATIVAS_CURTAS = {"nao", "não", "n"}
+
+FRASES_NEGATIVAS = [
+    "dispensa", "so isso", "só isso", "sem isso",
     "nao quero", "não quero", "deixa pra la", "deixa pra lá",
     "nao precisa", "não precisa", "pode deixar", "nem precisa",
 ]
@@ -511,14 +513,23 @@ def e_resposta_negativa(texto):
     """Reconhece uma resposta claramente negativa (recusa explícita) à
     oferta de produto complementar - diferente de uma resposta ambígua
     ou pergunta (ex: 'quanto fica tudo?'), que NAO deve ser tratada como
-    recusa nem fechar o pedido automaticamente."""
+    recusa nem fechar o pedido automaticamente.
+
+    CORRECAO (31/07/2026): a versao anterior verificava "n" como
+    substring dentro do texto inteiro (ex: "n" in "quanto fica tudo"),
+    o que da positivo porque a palavra "quanto" contem a letra "n" -
+    isso fazia qualquer mensagem com um "n" em qualquer lugar ser
+    tratada como recusa, fechando o pedido sem o cliente ter decidido.
+    Agora "nao"/"não"/"n" so contam quando aparecem como PALAVRA INTEIRA
+    (separada por espaco), nao como substring solta dentro de outra
+    palavra."""
     norm = normalizar_texto(texto)
     if not norm:
         return False
-    for p in PALAVRAS_NEGATIVAS:
-        if p in norm:
-            return True
-    return False
+    palavras = norm.split()
+    if any(p in PALAVRAS_NEGATIVAS_CURTAS for p in palavras):
+        return True
+    return any(frase in norm for frase in FRASES_NEGATIVAS)
 
 
 ultima_mensagem_cliente = {}
@@ -2597,8 +2608,6 @@ def ask_openai(number, text):
                 partes_conhecidas.append(f"Nome: {ultimo_pedido['nome_cliente']}")
             if ultimo_pedido.get("endereco"):
                 partes_conhecidas.append(f"Endereco: {ultimo_pedido['endereco']}")
-            if ultimo_pedido.get("forma_pagamento"):
-                partes_conhecidas.append(f"Forma de pagamento usada da ultima vez: {ultimo_pedido['forma_pagamento']}")
             if partes_conhecidas:
                 historico[number].append({
                     "role": "system",
@@ -2606,10 +2615,11 @@ def ask_openai(number, text):
                         "Este cliente ja comprou antes. Dados do pedido mais recente dele: "
                         + "; ".join(partes_conhecidas) + ". "
                         "Quando ele for fechar um novo pedido, NAO peca essas informacoes do zero - "
-                        "confirme com ele se nome, endereco e forma de pagamento continuam os mesmos "
+                        "confirme com ele se nome e endereco continuam os mesmos "
                         "(pode perguntar de forma direta, tipo 'posso confirmar a entrega no mesmo "
                         "endereco de sempre?'), e so peca de novo o que ele disser que mudou ou o que "
-                        "estiver faltando (por exemplo, o CPF, que nao fica salvo)."
+                        "estiver faltando. A forma de pagamento SEMPRE deve ser perguntada de novo, "
+                        "mesmo que ele ja tenha usado uma antes - nunca reutilize automaticamente."
                     )
                 })
 
@@ -2629,8 +2639,6 @@ def ask_openai(number, text):
             nomes_conhecidos[number] = nome_conhecido
         if ultimo_pedido and ultimo_pedido.get("endereco"):
             enderecos_conhecidos[number] = ultimo_pedido["endereco"]
-        if ultimo_pedido and ultimo_pedido.get("forma_pagamento"):
-            formas_pagamento_conhecidas[number] = ultimo_pedido["forma_pagamento"]
 
         if nome_conhecido:
             instrucao = (
@@ -2651,24 +2659,22 @@ def ask_openai(number, text):
 
     nome_ja_conhecido = nomes_conhecidos.get(number)
     endereco_ja_conhecido = enderecos_conhecidos.get(number)
-    forma_pagamento_ja_conhecida = formas_pagamento_conhecidas.get(number)
 
     partes_reforco = []
     if nome_ja_conhecido:
         partes_reforco.append(f"nome ({nome_ja_conhecido})")
     if endereco_ja_conhecido:
         partes_reforco.append(f"endereco ({endereco_ja_conhecido})")
-    if forma_pagamento_ja_conhecida:
-        partes_reforco.append(f"forma de pagamento ({forma_pagamento_ja_conhecida})")
 
     if partes_reforco:
         instrucao += (
             " IMPORTANTE: os seguintes dados deste cliente ja sao conhecidos: "
             + "; ".join(partes_reforco)
             + ". NUNCA peca esses dados de novo (nem o nome antes de transferir, nem "
-            "endereco/forma de pagamento no FLUXO DE PEDIDO OBRIGATORIO) - use-os "
-            "diretamente, e peca so o que realmente faltar (por exemplo, o CPF) ou o "
-            "que o cliente disser que mudou."
+            "endereco no FLUXO DE PEDIDO OBRIGATORIO) - use-os diretamente, e peca so o "
+            "que realmente faltar (por exemplo, o CPF, se ainda nao foi informado nesta "
+            "conversa) ou o que o cliente disser que mudou. A forma de pagamento SEMPRE "
+            "deve ser perguntada de novo a cada pedido."
         )
 
     valor_negociado_reforco_msg = precos_negociados.get(number)
