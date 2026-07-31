@@ -182,50 +182,41 @@ REGRAS OBRIGATORIAS:
 
 historico = {}
 
-# Nome do cliente ja conhecido nesta sessao do processo (number -> nome).
-# Preenchido tanto pelo lookup do ultimo pedido quanto pela captura durante
-# a transferencia. Diferente da mensagem de sistema (que fica "enterrada"
-# no meio do historico e perde peso), esse dado e reforcado em TODA
-# chamada a IA (ver ask_openai), nao so na primeira mensagem.
 nomes_conhecidos = {}
-
-# Mesma ideia do nomes_conhecidos, mas para endereco e forma de pagamento -
-# reforcados em toda mensagem para o FLUXO DE PEDIDO nao pedir de novo
-# depois de um desvio (ex: negociacao de desconto com atendente humano).
 enderecos_conhecidos = {}
-
-# Valor unitario negociado manualmente com um cliente (number -> float),
-# usado pelo botao "Voltar para Isabela" quando a atendente humana concede
-# um desconto. CORRECAO (30/07/2026): antes, o desconto so existia como
-# texto livre no resumo, que a IA precisava "entender" e aplicar sozinha -
-# nao confiavel o suficiente para uma questao financeira. Agora, quando
-# preenchido, esse valor E APLICADO EM CODIGO na hora de fechar o pedido,
-# nao depende da IA fazer a conta certa.
 precos_negociados = {}
 formas_pagamento_conhecidas = {}
 
-# Marcadores de controle interno que NUNCA podem ser mandados como texto
-# literal pro cliente - so fazem sentido dentro do fluxo principal do
-# webhook, que sabe interpreta-los antes de responder.
 MARCADORES_DE_CONTROLE = (
     "TRANSFERIR_FARMACEUTICO", "TRANSFERIR_HUMANO", "TRANSFERIR_ENCOMENDA", "CONSULTAR_ENTREGA",
 )
 
 
 def contem_marcador_de_controle(texto):
-    """CORRECAO (30/07/2026): funcoes que mandam a resposta da IA direto pro
-    cliente sem passar pelo dispatcher do webhook (retomar_atendimento_com_ia,
-    oferecer_produto_proativamente) as vezes recebiam um marcador de
-    controle interno (ex: TRANSFERIR_HUMANO) como se fosse texto normal, e
-    mandavam isso cru pro cliente ler. Usada antes de qualquer send() nessas
-    funcoes, pra nunca deixar isso vazar."""
     texto_upper = (texto or "").strip().upper()
     return any(marcador in texto_upper for marcador in MARCADORES_DE_CONTROLE)
+
+
 mensagens_processadas = set()
 transferido = {}
 mensagens_farmaceutico = {}
 
 FARMACEUTICO_TESTE = "5538998552537"
+
+# Números de teste: vendas e pedidos feitos por esses números NÃO são
+# gravados de verdade no banco (não baixam estoque/lote real, não aparecem
+# em relatórios) - use para testar o fluxo completo da Isabela com segurança.
+# Adicione outros números aqui conforme precisar.
+NUMEROS_TESTE = {
+    "553888172579",
+}
+
+
+def numero_e_teste(number):
+    apenas_digitos = "".join(c for c in (number or "") if c.isdigit())
+    return any(apenas_digitos.endswith(t[-8:]) for t in NUMEROS_TESTE)
+
+
 ultimo_cliente_transferido = None
 
 CONTROLADOS_PALAVRAS_CHAVE = [
@@ -498,15 +489,6 @@ PALAVRAS_DESCONTO = [
     "da pra fazer mais barato", "por menos",
 ]
 
-# CORRECAO (30/07/2026, apos falha real em producao): a lista de frases
-# fixas acima nao pegou "pode fazer a 8?" - um jeito super comum de pedir
-# desconto SEM usar a palavra "desconto", sugerindo um valor especifico.
-# Isso deixou a IA "aceitar" um preco diferente do de tabela sem nenhuma
-# aprovacao humana. Agora detectamos tambem o PADRAO de negociacao de preco:
-# um verbo de negociacao (pode fazer, consegue, fecha por, sai por...)
-# combinado com QUALQUER numero na mensagem - isso cobre "pode fazer a 8?",
-# "fecha por 15?", "consegue fazer por 20?", "sai por quanto?" com valor
-# em seguida, etc, sem depender de uma lista fixa de frases.
 VERBOS_NEGOCIACAO_PRECO = [
     "pode fazer", "consegue fazer", "da pra fazer", "tem como fazer",
     "pode deixar", "consegue deixar", "da pra deixar", "sai por", "fica por",
@@ -759,12 +741,6 @@ def transferir_com_distribuicao_automatica(number, conversa_id_criada):
     if not sucesso:
         return
 
-    # CORRECAO (30/07/2026): revertido - a saudacao de horario (Bom dia/Boa
-    # tarde/Boa noite) ja foi dita pela Isabela no inicio da conversa. Como
-    # essa apresentacao acontece minutos (as vezes segundos) depois, dentro
-    # da MESMA conversa, repetir "Bom dia" de novo aqui soa estranho e
-    # redundante pro cliente. A atendente so precisa se apresentar, sem
-    # repetir a saudacao.
     mensagem_apresentacao = f"Oi! Me chamo {atendente['nome']} e estou aqui para lhe ajudar. 😊"
     send(number, mensagem_apresentacao)
     inserir_mensagem_atendimento(conversa_id_criada, "atendente", mensagem_apresentacao)
@@ -871,12 +847,7 @@ def extrair_nome_e_pergunta_original(number):
 
 def registrar_nome_conhecido(number, nome):
     """Grava que o nome do cliente ja foi informado durante a transferencia
-    (farmaceutico, humano ou encomenda). CORRECAO (29/07/2026, reforcada em
-    30/07/2026): guarda em dois lugares - no historico (contexto da
-    conversa) E no dicionario nomes_conhecidos, que e reforcado em TODA
-    chamada a IA (nao so numa mensagem de sistema que pode perder peso no
-    meio da conversa). Sem isso, a Isabela as vezes voltava a perguntar o
-    nome de novo antes de transferir, mesmo ja sabendo."""
+    (farmaceutico, humano ou encomenda)."""
     if not nome:
         return
     nomes_conhecidos[number] = nome
@@ -898,9 +869,7 @@ def extrair_dados_venda(number):
     """Extrai os dados do pedido que acabou de ser fechado. IMPORTANTE: o
     pedido pode ter MAIS DE UM PRODUTO (ex: cliente pede Nimesulida e
     Amoxicilina na mesma conversa) - por isso o retorno sempre traz uma
-    LISTA em "produtos", nunca um produto unico solto. Isso e critico para
-    a checagem de medicamento controlado (ver eh_controlado/
-    algum_item_controlado) nao pular nenhum item do carrinho."""
+    LISTA em "produtos", nunca um produto unico solto."""
     if number not in historico:
         return None
 
@@ -941,8 +910,7 @@ def extrair_dados_venda(number):
 def produtos_da_venda(dados_venda):
     """Retorna sempre uma lista de itens do pedido (cada um com produto/
     quantidade/valor_unitario), a partir do dados_venda retornado por
-    extrair_dados_venda. Funcao central usada em todos os lugares que
-    processam o carrinho, para nunca tratar so o primeiro item."""
+    extrair_dados_venda."""
     if not dados_venda:
         return []
     itens = dados_venda.get("produtos")
@@ -952,17 +920,12 @@ def produtos_da_venda(dados_venda):
 
 
 def algum_item_controlado(itens):
-    """Verifica TODOS os itens do carrinho, nao so o primeiro - e a
-    correcao do bug em que um pedido com 2+ produtos (ex: Nimesulida +
-    Amoxicilina) deixava passar o item controlado sem pedir receita."""
+    """Verifica TODOS os itens do carrinho, nao so o primeiro."""
     return any(eh_controlado(item.get("produto")) for item in itens)
 
 
 def formatar_lista_itens(itens):
-    """Monta uma descricao legivel do carrinho, tipo
-    "Amoxicilina 500mg (21 caps) x1 + Nimesulida 100mg (20 comp) x1",
-    usada para exibir o pedido completo nas telas e mensagens que hoje so
-    tem um campo de texto para "produto"."""
+    """Monta uma descricao legivel do carrinho."""
     partes = []
     for item in itens:
         qtd = item.get("quantidade", 1)
@@ -972,10 +935,7 @@ def formatar_lista_itens(itens):
 
 def extrair_dados_receita(image_bytes):
     """Usa a IA de visao para ler a foto da receita e extrair os dados
-    necessarios para o lancamento posterior no SNGPC (via HOS). O prompt e
-    rigoroso de proposito: a IA NAO pode adivinhar ou usar dados de outras
-    partes da conversa, apenas o que estiver escrito de forma legivel na
-    propria imagem, para evitar alucinacao (inventar nome de paciente etc)."""
+    necessarios para o lancamento posterior no SNGPC (via HOS)."""
     try:
         b64 = base64.b64encode(image_bytes).decode("utf-8")
         instrucao = (
@@ -1053,17 +1013,7 @@ def subir_foto_receita(image_bytes, number):
 
 def salvar_receita_pendente(number, dados_venda, dados_receita, foto_url):
     """Grava no Supabase o registro da receita aguardando aprovacao do
-    farmaceutico, com os dados do pedido e os dados extraidos da receita.
-
-    IMPORTANTE (correcao 28/07/2026): o pedido pode ter varios produtos, nao
-    so o controlado. Por isso gravamos a lista completa em "itens_json"
-    (nova coluna, precisa existir na tabela receitas_pendentes - ver
-    instrucao de ALTER TABLE), preservando cada item com produto/
-    quantidade/valor_unitario para reconstruir a venda certinho quando o
-    farmaceutico aprovar. Os campos antigos (produto/quantidade/
-    valor_unitario) continuam preenchidos, com um resumo legivel de TODOS
-    os itens, so para a tela atual de Receitas Pendentes continuar
-    mostrando algo com sentido sem precisar mudar o frontend agora."""
+    farmaceutico, com os dados do pedido e os dados extraidos da receita."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return
     try:
@@ -1104,10 +1054,8 @@ def salvar_receita_pendente(number, dados_venda, dados_receita, foto_url):
 
 
 def notificar_farmaceutico_receita_pendente(number, dados_venda):
-    """Manda um aviso curto para o farmaceutico (sem a foto, para nao lotar
-    o WhatsApp dele) informando que ha uma receita nova aguardando revisao
-    no sistema. Lista TODOS os itens do pedido, nao so o controlado, para
-    o farmaceutico ter o contexto completo da compra."""
+    """Manda um aviso curto para o farmaceutico informando que ha uma
+    receita nova aguardando revisao no sistema."""
     itens = produtos_da_venda(dados_venda)
     descricao = formatar_lista_itens(itens) or dados_venda.get("produto", "medicamento controlado")
     mensagem = (
@@ -1121,9 +1069,7 @@ def notificar_farmaceutico_receita_pendente(number, dados_venda):
 
 def buscar_produto_complementar(produto_id):
     """Busca na tabela produtos_associados se existe algum produto marcado
-    como 'complementar' para o produto informado (usado para a Isabela
-    oferecer um item extra na hora de fechar a venda, tipo 'leva tambem').
-    Retorna {"id", "nome", "preco"} ou None se nao houver associacao."""
+    como 'complementar' para o produto informado."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY or not produto_id:
         return None
     try:
@@ -1154,10 +1100,7 @@ def buscar_produto_complementar(produto_id):
 
 def buscar_produto_por_nome(nome_produto):
     """Tenta encontrar o produto correspondente na tabela produtos, usando
-    busca aproximada pela primeira palavra do nome (ja que o nome dito pelo
-    cliente/IA pode nao bater 100% com o nome cadastrado no banco, ex:
-    'Dipirona' vs 'Dipirona Sodica 500mg 20cp'). Retorna o id do produto,
-    ou None se nao encontrar nada."""
+    busca aproximada pela primeira palavra do nome."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY or not nome_produto:
         return None
     try:
@@ -1181,11 +1124,8 @@ def buscar_produto_por_nome(nome_produto):
 
 
 def escolher_loja_para_produto(produto_id):
-    """Consulta a tabela estoque (estoque real por loja, ja existente no
-    sistema) e escolhe, entre as lojas que tem estoque disponivel
-    (quantidade > 0) para o produto, a de maior prioridade (menor numero
-    em ordem_prioridade). Retorna o unidade_id escolhido, ou None se
-    nenhuma loja tiver estoque."""
+    """Consulta a tabela estoque e escolhe, entre as lojas que tem estoque
+    disponivel (quantidade > 0) para o produto, a de maior prioridade."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY or not produto_id:
         return None
     try:
@@ -1219,11 +1159,10 @@ def escolher_loja_para_produto(produto_id):
 
 
 def registrar_venda(number, produto, quantidade, valor_unitario, unidade_id=None, produto_id=None):
-    """Grava no Supabase a venda fechada pela Isabela. Quando a loja de
-    origem e identificada (produto encontrado no banco + estoque
-    disponivel em alguma loja), grava tambem o unidade_id correspondente.
-    Grava tambem produto_id quando encontrado, para permitir relatorios
-    precisos de categoria/custo/margem no futuro."""
+    """Grava no Supabase a venda fechada pela Isabela."""
+    if numero_e_teste(number):
+        print(f"[MODO TESTE] Venda NAO gravada (numero de teste {number}): produto={produto}, qtd={quantidade}")
+        return
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return
     try:
@@ -1257,8 +1196,10 @@ def registrar_venda(number, produto, quantidade, valor_unitario, unidade_id=None
 
 def criar_pedido(number, dados_venda, unidade_id=None):
     """Cria o registro do pedido de entrega no Supabase, ja vinculado a
-    loja escolhida, logo apos a venda ser fechada pela Isabela. O campo
-    itens segue o formato ja usado no sistema: [{"qtd": N, "produto": "X"}]."""
+    loja escolhida, logo apos a venda ser fechada pela Isabela."""
+    if numero_e_teste(number):
+        print(f"[MODO TESTE] Pedido NAO gravado (numero de teste {number})")
+        return
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return
     try:
@@ -1294,6 +1235,9 @@ def criar_pedido_com_itens(number, nome_cliente, endereco, forma_pagamento, iten
     """Igual a criar_pedido, mas aceita uma lista de itens e um valor total
     ja calculados - usado quando o cliente aceita levar tambem um produto
     complementar junto com a compra original."""
+    if numero_e_teste(number):
+        print(f"[MODO TESTE] Pedido NAO gravado (numero de teste {number})")
+        return
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return
     try:
@@ -1554,9 +1498,7 @@ def buscar_reaberturas_pendentes():
 
 
 def reabrir_conversa(conversa_id):
-    """Volta a conversa para o estado 'aberta' no painel (sem atendente
-    atribuido, sem encerramento), para que apareca na fila normal de
-    atendimentos abertos e alguem possa contatar o cliente."""
+    """Volta a conversa para o estado 'aberta' no painel."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY or not conversa_id:
         return False
     try:
@@ -1655,10 +1597,6 @@ def aprovar_receita_endpoint():
         receita = registros[0]
         number = receita.get("cliente_telefone")
 
-        # CORRECAO (28/07/2026): usa itens_json quando existir (pedidos com
-        # 1+ produtos, salvos pela versao corrigida de salvar_receita_pendente).
-        # Registros antigos sem itens_json caem no fallback de item unico,
-        # para nao quebrar receitas que ja estavam pendentes antes da correcao.
         itens = receita.get("itens_json")
         if not isinstance(itens, list) or not itens:
             itens = [{
@@ -1705,10 +1643,6 @@ def aprovar_receita_endpoint():
             unidade_id=unidade_id_escolhida,
         )
 
-        # CORRECAO (29/07/2026): mensagem simplificada, seguindo feedback da
-        # reuniao com Daniel/Lucas/Henrique - a descricao longa sobre "receita
-        # aprovada pelo farmaceutico" foi tirada; o foco agora e confirmar a
-        # entrega e lembrar de ter a receita fisica/original em maos.
         mensagem_aprovado = (
             "Tudo certo! Sua entrega já está sendo providenciada. 😊\n"
             "Só não esqueça de ter a receita original em mãos na hora da entrega.\n\n"
@@ -1730,10 +1664,7 @@ def aprovar_receita_endpoint():
 @app.route("/recusar-receita", methods=["POST", "OPTIONS"])
 def recusar_receita_endpoint():
     """Endpoint chamado pela tela Receitas Pendentes quando o farmaceutico
-    recusa uma receita. CORRECAO (28/07/2026): antes, o botao "Recusar" so
-    atualizava o status no Supabase direto do frontend - o cliente nunca
-    recebia nenhuma resposta, ficava esperando pra sempre. Agora o cliente
-    e avisado do motivo da recusa e pode reenviar uma nova foto."""
+    recusa uma receita."""
     if request.method == "OPTIONS":
         resp = make_response()
         resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -1783,15 +1714,6 @@ def recusar_receita_endpoint():
         send(number, mensagem_recusa)
         registrar_conversa(number, "[Receita recusada pelo farmaceutico]", mensagem_recusa)
 
-        # CORRECAO 2 (28/07/2026): o estado aguardando_receita[number] ja
-        # tinha sido apagado la atras, no momento em que a PRIMEIRA foto foi
-        # recebida (ver o "aguardando_receita.pop(number)" no webhook) - nao
-        # era mais nada a "nao apagar" aqui, como a correcao anterior supos.
-        # Por isso a proxima foto do cliente nunca era processada: o numero
-        # simplesmente nao estava mais marcado como "aguardando receita".
-        # A correcao de verdade e RECRIAR esse estado aqui, reconstruindo o
-        # pedido a partir do que ja esta salvo no Supabase, para a proxima
-        # foto ser aceita normalmente pelo mesmo trecho do webhook.
         itens_reconstruidos = receita.get("itens_json")
         if not isinstance(itens_reconstruidos, list) or not itens_reconstruidos:
             itens_reconstruidos = [{
@@ -1816,9 +1738,7 @@ def recusar_receita_endpoint():
 @app.route("/responder-atendimento", methods=["POST", "OPTIONS"])
 def responder_atendimento_endpoint():
     """Endpoint usado pela tela de Conversas do VidaFarma para a atendente
-    humana enviar uma mensagem de verdade pro cliente, via UAZAPI. Recebe
-    telefone e mensagem; nao mexe na tabela conversas (o status do
-    atendimento continua controlado pelos campos ja existentes)."""
+    humana enviar uma mensagem de verdade pro cliente, via UAZAPI."""
     if request.method == "OPTIONS":
         resp = make_response()
         resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -1855,10 +1775,7 @@ def responder_atendimento_endpoint():
 
 @app.route("/criar-acesso", methods=["POST", "OPTIONS"])
 def criar_acesso_endpoint():
-    """Cria um login individual (Supabase Auth) + o perfil correspondente
-    (papel henrique/atendente, vinculado opcionalmente a um atendente_id).
-    Usa a service_role key, que so existe aqui no servidor - nunca deve
-    ir para o codigo do painel (frontend)."""
+    """Cria um login individual (Supabase Auth) + o perfil correspondente."""
     if request.method == "OPTIONS":
         resp = make_response()
         resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -1926,8 +1843,7 @@ def criar_acesso_endpoint():
 
 @app.route("/excluir-acesso", methods=["POST", "OPTIONS"])
 def excluir_acesso_endpoint():
-    """Exclui um login individual (Supabase Auth). O perfil correspondente
-    e apagado automaticamente por CASCADE."""
+    """Exclui um login individual (Supabase Auth)."""
     if request.method == "OPTIONS":
         resp = make_response()
         resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -1969,17 +1885,7 @@ def excluir_acesso_endpoint():
 @app.route("/pedir-avaliacao", methods=["POST", "OPTIONS"])
 def pedir_avaliacao_endpoint():
     """Endpoint usado pela tela de Conversas do VidaFarma quando a atendente
-    clica em 'Encerrar atendimento'. Manda a pergunta de nota (1 a 5) pro
-    cliente e guarda qual conversa deve receber a nota quando ele responder.
-
-    IMPORTANTE: aqui tambem encerramos o vinculo desse telefone com o
-    atendimento humano que acabou de ser fechado (transferido[telefone] e
-    conversa_ativa_id[telefone]). Sem isso, o sistema continuava achando
-    para sempre que aquele numero "ja estava transferido", e um pedido novo
-    do mesmo cliente no futuro nunca chegava a abrir uma conversa nova no
-    painel - so ficava caindo (ou se perdendo) dentro do atendimento antigo
-    ja encerrado.
-    """
+    clica em 'Encerrar atendimento'."""
     if request.method == "OPTIONS":
         resp = make_response()
         resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -2005,9 +1911,6 @@ def pedir_avaliacao_endpoint():
 
         transferido[telefone] = False
         conversa_ativa_id.pop(telefone, None)
-        # Impede que o verificador de follow-up automatico (mensagens tipo
-        # "notei que voce sumiu...") mande algo pra esse cliente logo
-        # depois que um humano acabou de encerrar o atendimento.
         encerrado[telefone] = True
 
         mensagem = (
@@ -2023,10 +1926,8 @@ def pedir_avaliacao_endpoint():
 
 
 def retomar_atendimento_com_ia(number):
-    """Depois que um atendente humano devolve a conversa pra Isabela (via
-    /voltar-para-ia), gera proativamente a proxima mensagem dela SEM
-    esperar o cliente escrever de novo - mesmo padrao ja usado quando o
-    farmaceutico devolve a conversa via /voltarbot (oferecer_produto_proativamente)."""
+    """Depois que um atendente humano devolve a conversa pra Isabela, gera
+    proativamente a proxima mensagem dela."""
     if number not in historico:
         return
 
@@ -2073,11 +1974,6 @@ def retomar_atendimento_com_ia(number):
         historico[number].append({"role": "assistant", "content": reply})
         send(number, reply)
 
-        # CORRECAO (30/07/2026, problema 2): antes essa linha do historico do
-        # painel usava sempre o mesmo texto generico entre colchetes, o que
-        # nao dava pra saber o que realmente foi negociado ao revisar depois.
-        # Agora mostra o valor combinado (quando houver), pra ficar visivel
-        # na tela de Historico/Conversas o motivo da mudanca de preco.
         descricao_retomada = "[Retomado apos negociacao com atendente humano]"
         if valor_negociado_reforco:
             descricao_retomada = f"[Retomado apos negociacao - valor combinado: R$ {valor_negociado_reforco:.2f}]"
@@ -2090,9 +1986,7 @@ def retomar_atendimento_com_ia(number):
 @app.route("/voltar-para-ia", methods=["POST", "OPTIONS"])
 def voltar_para_ia_endpoint():
     """Endpoint chamado pela tela de Conversas quando a atendente clica em
-    'Voltar para Isabela' - devolve o atendimento pra IA fechar a venda
-    (por exemplo, apos negociar desconto), em vez de so encerrar o
-    atendimento e pedir avaliacao (que e o que /pedir-avaliacao faz)."""
+    'Voltar para Isabela'."""
     if request.method == "OPTIONS":
         resp = make_response()
         resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -2133,11 +2027,6 @@ def voltar_para_ia_endpoint():
             if resumo:
                 partes_resumo_sistema.append(f'o resultado foi: "{resumo}"')
             if valor_negociado:
-                # CORRECAO (30/07/2026): alem de avisar a IA (pra ela usar o
-                # valor certo na mensagem de confirmacao pro cliente), esse
-                # valor tambem e aplicado EM CODIGO na hora de fechar o
-                # pedido (ver o bloco que trata "Foi um prazer te atender"
-                # no webhook) - nao depende so da IA fazer a conta certa.
                 partes_resumo_sistema.append(
                     f"o valor combinado para o produto foi EXATAMENTE R$ {valor_negociado:.2f} "
                     "(em vez do preco de tabela)"
@@ -2230,14 +2119,6 @@ def webhook():
 
             return "ok", 200
 
-        # CORRECAO (30/07/2026): antes, "sender_pn" era a primeira opcao pra
-        # identificar o numero do cliente - mas o WhatsApp atual pode
-        # retornar um sender_pn diferente do numero real da conversa
-        # (sistema de identificadores LID), o que fazia a Isabela responder
-        # a um numero errado (a mensagem gerada ia pro sender_pn, nao pro
-        # chatid de quem realmente estava conversando). Agora priorizamos
-        # chatid/wa_chatid, que representam de forma confiavel a conversa
-        # 1:1 em si, e usamos sender_pn so como ultimo recurso.
         number = limpar_numero(chat.get("wa_chatid"))
         if not number:
             number = limpar_numero(msg.get("chatid"))
@@ -2297,15 +2178,11 @@ def webhook():
                 mensagem_obrigado = "Muito obrigada pela sua avaliação! Isso nos ajuda muito a melhorar. 💙"
                 send(number, mensagem_obrigado)
                 return "ok", 200
-            # Se a resposta nao for um numero de 1 a 5, deixa cair no fluxo
-            # normal abaixo (nao trava o cliente esperando uma nota valida).
 
         conversa_id_atual = conversa_ativa_id.get(number)
         esta_transferido = bool(number and transferido.get(number))
 
         if number and not esta_transferido:
-            # A memoria pode ter sido limpa por um restart/redeploy do
-            # servidor - confirma no banco antes de tratar como conversa nova.
             conversa_ativa_no_banco = buscar_conversa_humana_ativa(number)
             if conversa_ativa_no_banco:
                 esta_transferido = True
@@ -2469,16 +2346,6 @@ def webhook():
             encerrado[number] = True
             return "ok", 200
 
-        # CORRECAO (29/07/2026): antes, essa checagem so rodava quando a
-        # conversa JA estava marcada como encerrada (encerrado[number]=True,
-        # o que so acontece apos um pedido fechado de verdade). Numa
-        # conversa de agradecimento solto (cliente so manda "Ok", "Não
-        # obrigado" etc sem nunca ter fechado pedido), esse estado nunca
-        # chegava a ser True, e a Isabela ficava gerando uma resposta nova
-        # via IA pra cada "Ok" pra sempre, num loop de gentilezas ("Tudo
-        # bem!", "Fico a disposicao!"...). Agora a checagem de despedida
-        # roda sempre, independente do estado anterior, e silencia+marca
-        # como encerrada assim que reconhece esse tipo de mensagem curta.
         if number and e_mensagem_de_despedida(text):
             print(f"[SILENCIO] Mensagem de despedida/reconhecimento curto ignorada para {number}: {text}")
             encerrado[number] = True
@@ -2492,12 +2359,6 @@ def webhook():
             ultima_mensagem_cliente[number] = datetime.now(pytz.timezone("America/Sao_Paulo"))
             estagios_enviados[number] = set()
 
-        # DECISAO (30/07/2026): pedido de desconto SEMPRE transfere pra
-        # atendente humana na hora, garantido em codigo - nao depende mais
-        # da IA decidir isso sozinha (ela as vezes respondia "nao
-        # conseguimos desconto" ao inves de transferir, de forma
-        # inconsistente). So dispara se essa conversa ainda nao estiver
-        # transferida (esta_transferido ja garantido False neste ponto).
         if number and mensagem_pede_desconto(text):
             print(f"[DESCONTO] Pedido de desconto detectado em codigo - transferindo direto: {number}")
             nome_conhecido_desconto = nomes_conhecidos.get(number)
@@ -2531,14 +2392,6 @@ def webhook():
 
         reply = ask_openai(number, text)
 
-        # CORRECAO DEFINITIVA (30/07/2026): reforcar a regra so no texto do
-        # prompt nao foi suficiente - a IA insistiu em perguntar o nome de
-        # novo mesmo com a instrucao repetida em toda mensagem. Em vez de
-        # confiar so no prompt, INTERCEPTAMOS aqui em codigo: se a resposta
-        # for exatamente a pergunta padrao de nome e o sistema ja souber o
-        # nome desse cliente, forcamos uma nova chamada dizendo pra IA que
-        # o nome ja e conhecido e que ela deve decidir a transferencia
-        # agora, sem mandar a pergunta desnecessaria pro cliente.
         if reply and nomes_conhecidos.get(number):
             reply_normalizado = reply.strip().lower().replace("é", "e")
             if "qual e o seu nome" in reply_normalizado:
@@ -2637,28 +2490,12 @@ def webhook():
                 dados_venda = extrair_dados_venda(number)
                 itens_pedido_extraidos = produtos_da_venda(dados_venda)
 
-                # CORRECAO DEFINITIVA (30/07/2026, problema financeiro): o
-                # valor negociado com o atendente humano e aplicado AQUI, em
-                # codigo, sobrescrevendo o preco de tabela que a IA tenha
-                # calculado - nao depende mais so da IA "entender" o desconto
-                # e fazer a conta certa sozinha. So aplica quando ha exatamente
-                # 1 item no carrinho (caso mais comum de negociacao); com
-                # varios itens, o valor negociado nao e aplicado automatico
-                # aqui (ambiguo a qual item se refere) e fica so como contexto
-                # pra IA. O valor e consumido (removido) depois de usado, pra
-                # nao vazar pra um pedido futuro desse mesmo numero.
                 valor_negociado_aplicar = precos_negociados.pop(number, None)
                 if valor_negociado_aplicar and len(itens_pedido_extraidos) == 1:
                     print(f"[PRECO NEGOCIADO] Aplicando R$ {valor_negociado_aplicar:.2f} em codigo para {number}")
                     itens_pedido_extraidos[0]["valor_unitario"] = valor_negociado_aplicar
 
                 if dados_venda and algum_item_controlado(itens_pedido_extraidos):
-                    # CORRECAO DE SEGURANCA (28/07/2026): antes, so o primeiro
-                    # produto do carrinho era checado - um pedido com 2+ itens
-                    # (ex: Nimesulida + Amoxicilina) podia fechar sem pedir
-                    # receita se o controlado nao fosse o primeiro identificado.
-                    # Agora TODO o carrinho fica pendente ate a receita ser
-                    # aprovada, mesmo que so 1 dos itens exija receita.
                     aguardando_receita[number] = dados_venda
                     nomes_controlados = [
                         item.get("produto") for item in itens_pedido_extraidos
@@ -2686,7 +2523,6 @@ def webhook():
                             "itens_resolvidos": itens_resolvidos,
                             "complementar": complementar,
                         }
-
                         preco_txt = ""
                         if complementar.get("preco"):
                             preco_formatado = f"{complementar['preco']:.2f}".replace(".", ",")
@@ -2755,17 +2591,7 @@ def webhook():
 
 def registrar_resposta_no_historico(number, texto):
     """Registra na memoria da propria IA (historico[number]) uma mensagem
-    que foi enviada pro cliente por fora do ask_openai() - por exemplo,
-    o pedido de foto da receita, a confirmacao de recebimento dela, a
-    oferta de produto complementar, ou o status de entrega.
-
-    Sem isso, a IA "esquece" que essas mensagens foram enviadas de
-    verdade: ela so lembra do ultimo texto que ELA MESMA gerou via
-    OpenAI (normalmente a mensagem de fechamento generica), e ao
-    responder a proxima mensagem do cliente, tende a gerar essa mesma
-    mensagem de fechamento de novo - o que faz o codigo reiniciar todo
-    o fluxo (por exemplo, pedir a foto da receita outra vez, mesmo ja
-    tendo recebido)."""
+    que foi enviada pro cliente por fora do ask_openai()."""
     if number not in historico:
         historico[number] = []
     historico[number].append({"role": "assistant", "content": texto})
@@ -2773,11 +2599,7 @@ def registrar_resposta_no_historico(number, texto):
 
 def forcar_transferencia_sem_pergunta_nome(number):
     """Chamada quando a IA tentou perguntar o nome do cliente de novo, mesmo
-    ja sabendo (nomes_conhecidos). Em vez de mandar essa pergunta
-    desnecessaria pro cliente, injeta um aviso direto e pede pra IA decidir
-    a transferencia de verdade agora - sem gerar nenhuma pergunta nova pro
-    cliente responder. Retorna a nova resposta, ou None se der erro (nesse
-    caso, o chamador mantem a resposta original como fallback)."""
+    ja sabendo (nomes_conhecidos)."""
     if number not in historico:
         return None
 
@@ -2824,12 +2646,7 @@ def forcar_transferencia_sem_pergunta_nome(number):
 
 
 def buscar_ultimo_pedido_cliente(number):
-    """Busca o pedido mais recente desse telefone (nome/endereco/forma de
-    pagamento), para a Isabela poder confirmar esses dados em vez de pedir
-    tudo de novo do zero a cada novo pedido - decisao de reuniao (29/07/2026),
-    motivada pelo caso de clientes com varios cadastros de endereco na Rede
-    Soma: usar o endereco/dados da ULTIMA conversa/pedido, nao o primeiro
-    cadastro. Retorna None se nao houver pedido anterior ou em caso de erro."""
+    """Busca o pedido mais recente desse telefone."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return None
     try:
@@ -2857,9 +2674,6 @@ def ask_openai(number, text):
     if eh_conversa_nova:
         historico[number] = []
 
-        # So busca o pedido anterior na primeira vez que esse numero aparece
-        # nesta sessao do processo (evita ficar repetindo a consulta e
-        # repetindo a mensagem de sistema a cada mensagem da conversa).
         ultimo_pedido = buscar_ultimo_pedido_cliente(number)
         if ultimo_pedido:
             partes_conhecidas = []
@@ -2892,21 +2706,7 @@ def ask_openai(number, text):
 
     saudacao = get_saudacao()
 
-    # CORRECAO (29/07/2026): antes checava len(historico[number]) == 1 para
-    # saber se era a primeira mensagem - isso quebrava para clientes
-    # conhecidos, porque agora a primeira "mensagem" da conversa pode vir
-    # acompanhada de uma mensagem de sistema com os dados do pedido
-    # anterior (ver buscar_ultimo_pedido_cliente), deixando o historico com
-    # 2 itens em vez de 1 logo de cara. Usamos eh_conversa_nova, que reflete
-    # corretamente se esta e a primeira vez que esse numero aparece nesta
-    # sessao, independente de quantas mensagens de sistema foram injetadas.
     if eh_conversa_nova:
-        # CORRECAO (29/07/2026): quando ja sabemos o nome do cliente (pedido
-        # anterior encontrado), a saudacao completa (Bom dia/Boa tarde/Boa
-        # noite) precisa continuar aparecendo, mesmo cumprimentando pelo
-        # nome - antes a IA as vezes pulava direto pro nome ("Ola, Fulano!")
-        # sem a saudacao, quando esse contexto de cliente conhecido entrava
-        # em jogo.
         nome_conhecido = None
         if ultimo_pedido and ultimo_pedido.get("nome_cliente"):
             nome_conhecido = ultimo_pedido["nome_cliente"].strip().split(" ")[0]
@@ -2933,12 +2733,6 @@ def ask_openai(number, text):
     else:
         instrucao = SYSTEM_PROMPT + " Esta NAO e a primeira mensagem. NAO se apresente. Responda diretamente."
 
-    # CORRECAO (30/07/2026): reforca o nome conhecido do cliente em TODA
-    # chamada a IA, nao so na primeira mensagem - uma unica mensagem de
-    # sistema no meio do historico (ver registrar_nome_conhecido) as vezes
-    # perdia peso e a Isabela voltava a perguntar o nome antes de
-    # transferir, mesmo ja sabendo. Repetir isso a cada chamada, direto no
-    # prompt de sistema, da muito mais peso pra regra.
     nome_ja_conhecido = nomes_conhecidos.get(number)
     endereco_ja_conhecido = enderecos_conhecidos.get(number)
     forma_pagamento_ja_conhecida = formas_pagamento_conhecidas.get(number)
@@ -2952,10 +2746,6 @@ def ask_openai(number, text):
         partes_reforco.append(f"forma de pagamento ({forma_pagamento_ja_conhecida})")
 
     if partes_reforco:
-        # CORRECAO (30/07/2026): antes so o nome era reforcado - o endereco e
-        # a forma de pagamento eram esquecidos depois de qualquer desvio na
-        # conversa (ex: negociacao de desconto com atendente humano), e o
-        # FLUXO DE PEDIDO voltava a pedir tudo do zero.
         instrucao += (
             " IMPORTANTE: os seguintes dados deste cliente ja sao conhecidos: "
             + "; ".join(partes_reforco)
