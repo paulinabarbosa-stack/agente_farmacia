@@ -6,8 +6,8 @@ na tela "Produtos Associados" do VidaFarma.
 Como funciona (um lote por vez, chamado pelo job de sincronizacao de estoque):
 1. Pega produtos que TEM ESTOQUE e ainda nao foram analisados.
 2. Pede pra IA (gpt-4o-mini) ate 2 TIPOS de produto complementar (ex: "vitamina
-   c", "soro fisiologico") - a IA NAO escolhe produto especifico. Cada ideia
-   vem com uma nota de confianca de 1 a 5; so ficam as de nota 4 ou 5.
+   c", "soro de reidratacao") - a IA NAO escolhe produto especifico. Cada ideia
+   vem com uma nota de confianca de 1 a 5; so ficam as de nota 3 ou mais.
 3. Procura no catalogo real um produto com esse termo, com estoque, e grava na
    tabela sugestoes_associados com status 'pendente'.
 
@@ -15,8 +15,7 @@ NADA vai pra Isabela sem aprovacao: a Isabela so le a tabela
 produtos_associados, e uma sugestao so entra la quando o farmaceutico aprova.
 
 Seguranca: a IA so sugere COMPLEMENTARES (nunca substitutos). Produtos que
-precisam de receita, controlados, antibioticos, corticoides e de uso
-dermatologico especifico NAO recebem sugestao.
+exigem receita, controlados, antibioticos e corticoides NAO recebem sugestao.
 
 LIGADO/DESLIGADO: so roda se a variavel de ambiente SUGESTOES_ATIVAS=true
 estiver configurada no Railway.
@@ -32,7 +31,7 @@ SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
 PRODUTOS_POR_LOTE = 10          # quantos produtos analisa por ciclo (5 min)
 MAX_SUGESTOES_POR_PRODUTO = 2
-CONFIANCA_MINIMA = 4            # so grava ideias com nota >= 4 (escala 1 a 5)
+CONFIANCA_MINIMA = 3            # so grava ideias com nota >= 3 (escala 1 a 5)
 MODELO = "gpt-4o-mini"
 
 # Produtos que ja foram analisados nesta execucao (evita repetir a mesma
@@ -124,28 +123,31 @@ def _pedir_ideias_ia(nome, marca):
     de {"termo": str, "motivo": str} ja filtrada por confianca."""
     prompt = (
         "Voce e um farmaceutico experiente de uma drogaria brasileira. Sua tarefa e indicar produtos "
-        "COMPLEMENTARES: itens que o farmaceutico recomendaria NO BALCAO para quem esta comprando o "
-        "produto abaixo, porque ajudam no MESMO problema de saude ou no mesmo tratamento.\n\n"
+        "COMPLEMENTARES: itens de venda livre que o farmaceutico oferece NO BALCAO para quem compra "
+        "o produto abaixo, porque ajudam no MESMO problema de saude ou na mesma rotina de cuidado.\n\n"
         f"Produto: {nome}" + (f" (marca {marca})" if marca else "") + "\n\n"
-        "REGRAS (siga todas):\n"
-        "1. Se o produto exige receita, e controlado, antibiotico, corticoide (ex: dexametasona, "
-        "betametasona), anti-inflamatorio de uso sob prescricao, ou e de uso dermatologico "
-        "especifico, devolva a lista VAZIA.\n"
-        "2. So sugira item de venda livre que tenha ligacao DIRETA com a condicao que o produto trata "
-        "(ex: para tosse com catarro, sugerir vitamina C ou xarope de apoio; para curativo, sugerir "
-        "antisseptico). Nao use a ligacao generica 'faz bem a saude'.\n"
-        "3. NAO sugira itens genericos so para preencher: hidratante, protetor solar, soro "
-        "fisiologico e vitaminas sao proibidos, a menos que tenham ligacao direta e clara com o "
-        "produto.\n"
-        "4. NUNCA sugira outro medicamento para a mesma finalidade (isso seria substituto, nao "
-        "complementar).\n"
-        f"5. No maximo {MAX_SUGESTOES_POR_PRODUTO} sugestoes. Menos e melhor: se nao houver um "
-        "complementar claro, devolva lista vazia. Lista vazia e uma resposta correta e comum.\n"
-        '6. "termo" e a palavra de busca no catalogo: 1 ou 2 palavras, generica, sem marca '
-        '(ex: "vitamina c", "antisseptico").\n'
-        '7. "motivo" e uma frase curta em portugues explicando a ligacao direta com o produto.\n'
-        '8. "confianca" e um numero de 1 a 5: 5 = recomendacao classica e segura; 4 = boa; '
-        "3 ou menos = duvidosa (nesse caso, nem inclua).\n\n"
+        "REGRAS:\n"
+        "1. Se o produto EXIGE receita, e controlado, antibiotico ou corticoide, devolva a lista "
+        "VAZIA. (Na duvida entre venda livre e receita, trate como venda livre.)\n"
+        "2. Sugira so itens de venda livre com ligacao clara com o problema que o produto trata. "
+        "Itens como soro fisiologico, soro de reidratacao, vitamina C, antisseptico, curativo, "
+        "termometro, pastilha para garganta, hidratante labial e similares SAO permitidos quando "
+        "combinam com o uso do produto.\n"
+        "3. NUNCA sugira outro medicamento para a mesma finalidade (isso seria substituto).\n"
+        f"4. No maximo {MAX_SUGESTOES_POR_PRODUTO} sugestoes. Prefira 1 ou 2 boas a nenhuma, mas nao "
+        "invente: se nao houver ligacao real, devolva lista vazia.\n"
+        '5. "termo" e a palavra de busca no catalogo: 1 ou 2 palavras, generica, sem marca '
+        '(ex: "vitamina c", "soro reidratacao").\n'
+        '6. "motivo" e uma frase curta em portugues explicando a ligacao com o produto.\n'
+        '7. "confianca" e um numero de 1 a 5: 5 = recomendacao classica; 4 = boa; 3 = razoavel; '
+        "2 ou menos = fraca (nao inclua).\n\n"
+        "EXEMPLOS de pares bons (so para calibrar, nao copie se nao combinar com o produto):\n"
+        "- xarope expectorante -> vitamina c (confianca 4)\n"
+        "- antiemetico para enjoo/vomito -> soro reidratacao (confianca 5)\n"
+        "- descongestionante nasal -> soro fisiologico (confianca 5)\n"
+        "- analgesico/antitermico -> termometro (confianca 3)\n"
+        "- pomada para ferida -> curativo (confianca 5)\n"
+        "- remedio para garganta -> pastilha garganta (confianca 4)\n\n"
         'Responda SOMENTE com JSON: {"sugestoes": [{"termo": "...", "motivo": "...", "confianca": 5}]}'
     )
     r = requests.post(
