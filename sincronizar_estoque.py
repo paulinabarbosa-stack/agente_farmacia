@@ -202,6 +202,7 @@ def _upsert_estoque(produto_id, unidade_id, quantidade):
         print("[SINCRONIZAR ESTOQUE] Erro ao fazer upsert de estoque:", e)
 
 
+_diagnostico_feito = set()
 LIMITE_PAGINAS_ESTOQUE = 200          # trava de seguranca contra loop infinito
 PAUSA_ENTRE_PAGINAS_SEGUNDOS = 1      # evita bloqueio do Cloudflare
 
@@ -222,6 +223,20 @@ def _buscar_estoque_paginado(codigo, lastupdate):
     # Se veio menos que 200, nao ha o que paginar (resposta ja completa).
     if tamanho_pagina < 200:
         return todos
+
+    # DIAGNOSTICO (roda so uma vez por codigo): descobre se a HOS respeita o
+    # limit. Se limit=50 devolver 50, o limit funciona e 200 e o total real.
+    if codigo not in _diagnostico_feito:
+        _diagnostico_feito.add(codigo)
+        try:
+            teste_limit = get_estoque(codigo, limit=50, lastupdate=lastupdate)
+            teste_offset = get_estoque(codigo, limit=50, offset=50, lastupdate=lastupdate)
+            print(
+                f"[DIAGNOSTICO ESTOQUE] Codigo {codigo}: limit=50 -> {len(teste_limit)} item(ns); "
+                f"limit=50&offset=50 -> {len(teste_offset)} item(ns)"
+            )
+        except Exception as e:
+            print(f"[DIAGNOSTICO ESTOQUE] Codigo {codigo}: erro no teste:", e)
 
     chave_primeiro = str(primeira[0])
     offset = tamanho_pagina
