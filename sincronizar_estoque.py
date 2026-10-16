@@ -386,4 +386,12 @@ def verificar_sincronizacao_estoque():
         except Exception as e:
             print("[SINCRONIZAR ESTOQUE] Erro no ciclo de sincronizacao:", e)
 
+        # Aproveita o mesmo ciclo pra gerar um lote de sugestoes de produtos
+        # complementares (so roda se SUGESTOES_ATIVAS=true no Railway).
+        try:
+            from sugestoes_associados import gerar_lote_de_sugestoes
+            gerar_lote_de_sugestoes()
+        except Exception as e:
+            print("[SUGESTOES] Erro ao gerar sugestoes:", e)
+
         time.sleep(INTERVALO_SINCRONIZACAO_SEGUNDOS)
