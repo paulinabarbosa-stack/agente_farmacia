@@ -202,56 +202,34 @@ def _upsert_estoque(produto_id, unidade_id, quantidade):
         print("[SINCRONIZAR ESTOQUE] Erro ao fazer upsert de estoque:", e)
 
 
-_diagnostico_feito = set()
-LIMITE_PAGINAS_ESTOQUE = 200          # trava de seguranca contra loop infinito
+LIMITE_ESTOQUE_POR_CHAMADA = 100000   # limit alto, como a HOS orientou
+LIMITE_PAGINAS_ESTOQUE = 50           # trava de seguranca contra loop infinito
 PAUSA_ENTRE_PAGINAS_SEGUNDOS = 1      # evita bloqueio do Cloudflare
 
 
 def _buscar_estoque_paginado(codigo, lastupdate):
-    """Busca o /estoque inteiro. Pede limit alto; se a HOS devolver so uma
-    parte (ex: 200 por chamada), continua pedindo com offset ate acabar.
-    Para sozinho se a pagina vier vazia, menor que a primeira, ou repetida
-    (caso o offset seja ignorado pela HOS)."""
-    primeira = get_estoque(codigo, lastupdate=lastupdate)
+    """Busca o /estoque. Na HOS o parametro "offset" e o NUMERO DA PAGINA
+    (pagina N comeca no item N x limit), e nao um deslocamento de linhas.
+    Com limit=100000 tudo vem na primeira chamada; so se vier uma pagina
+    cheia (100000 itens) buscamos a proxima (offset=1, 2, ...)."""
+    primeira = get_estoque(codigo, limit=LIMITE_ESTOQUE_POR_CHAMADA, lastupdate=lastupdate)
     if not isinstance(primeira, list):
         return primeira
+
     todos = list(primeira)
-    tamanho_pagina = len(primeira)
-    if tamanho_pagina == 0:
+    if len(primeira) < LIMITE_ESTOQUE_POR_CHAMADA:
         return todos
 
-    # Se veio menos que 200, nao ha o que paginar (resposta ja completa).
-    if tamanho_pagina < 200:
-        return todos
-
-    # DIAGNOSTICO (roda so uma vez por codigo): descobre se a HOS respeita o
-    # limit. Se limit=50 devolver 50, o limit funciona e 200 e o total real.
-    if codigo not in _diagnostico_feito:
-        _diagnostico_feito.add(codigo)
-        try:
-            teste_limit = get_estoque(codigo, limit=50, lastupdate=lastupdate)
-            teste_offset = get_estoque(codigo, limit=50, offset=50, lastupdate=lastupdate)
-            print(
-                f"[DIAGNOSTICO ESTOQUE] Codigo {codigo}: limit=50 -> {len(teste_limit)} item(ns); "
-                f"limit=50&offset=50 -> {len(teste_offset)} item(ns)"
-            )
-        except Exception as e:
-            print(f"[DIAGNOSTICO ESTOQUE] Codigo {codigo}: erro no teste:", e)
-
-    chave_primeiro = str(primeira[0])
-    offset = tamanho_pagina
-    for _ in range(LIMITE_PAGINAS_ESTOQUE):
+    for pagina_numero in range(1, LIMITE_PAGINAS_ESTOQUE):
         time.sleep(PAUSA_ENTRE_PAGINAS_SEGUNDOS)
-        pagina = get_estoque(codigo, offset=offset, lastupdate=lastupdate)
+        pagina = get_estoque(
+            codigo, limit=LIMITE_ESTOQUE_POR_CHAMADA, offset=pagina_numero, lastupdate=lastupdate
+        )
         if not isinstance(pagina, list) or not pagina:
             break
-        if str(pagina[0]) == chave_primeiro:
-            print(f"[SINCRONIZAR ESTOQUE] Codigo {codigo}: HOS ignorou o offset ({offset}) - parando paginacao")
-            break
         todos.extend(pagina)
-        if len(pagina) < tamanho_pagina:
+        if len(pagina) < LIMITE_ESTOQUE_POR_CHAMADA:
             break
-        offset += len(pagina)
 
     print(f"[SINCRONIZAR ESTOQUE] Codigo {codigo}: paginacao concluida com {len(todos)} produto(s)")
     return todos

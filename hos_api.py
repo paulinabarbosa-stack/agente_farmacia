@@ -138,8 +138,9 @@ def get_estoque(codigo, limit=100000, offset=0, lastupdate=0):
     Orientacao da HOS (16/10/2026): usar limit alto + lastupdate e consultar
     a cada 3-5 minutos (mais frequente que isso o Cloudflare pode bloquear).
 
-    IMPORTANTE: o parametro offset da API HOS ja se mostrou quebrado
-    (offset>0 retornava vazio) - por isso usamos offset=0 com limit alto.
+    IMPORTANTE: na API HOS o "offset" e o NUMERO DA PAGINA (pagina N comeca
+    no item N x limit), nao um deslocamento de linhas. Confirmado pela HOS em
+    16/10/2026. Por isso usamos limit alto e offset=0 (primeira pagina).
     """
     return _hos_request(
         codigo, f"/estoque?limit={limit}&offset={offset}&lastupdate={int(lastupdate)}"
