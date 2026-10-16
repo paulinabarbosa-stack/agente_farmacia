@@ -202,6 +202,46 @@ def _upsert_estoque(produto_id, unidade_id, quantidade):
         print("[SINCRONIZAR ESTOQUE] Erro ao fazer upsert de estoque:", e)
 
 
+LIMITE_PAGINAS_ESTOQUE = 200          # trava de seguranca contra loop infinito
+PAUSA_ENTRE_PAGINAS_SEGUNDOS = 1      # evita bloqueio do Cloudflare
+
+
+def _buscar_estoque_paginado(codigo, lastupdate):
+    """Busca o /estoque inteiro. Pede limit alto; se a HOS devolver so uma
+    parte (ex: 200 por chamada), continua pedindo com offset ate acabar.
+    Para sozinho se a pagina vier vazia, menor que a primeira, ou repetida
+    (caso o offset seja ignorado pela HOS)."""
+    primeira = get_estoque(codigo, lastupdate=lastupdate)
+    if not isinstance(primeira, list):
+        return primeira
+    todos = list(primeira)
+    tamanho_pagina = len(primeira)
+    if tamanho_pagina == 0:
+        return todos
+
+    # Se veio menos que 200, nao ha o que paginar (resposta ja completa).
+    if tamanho_pagina < 200:
+        return todos
+
+    chave_primeiro = str(primeira[0])
+    offset = tamanho_pagina
+    for _ in range(LIMITE_PAGINAS_ESTOQUE):
+        time.sleep(PAUSA_ENTRE_PAGINAS_SEGUNDOS)
+        pagina = get_estoque(codigo, offset=offset, lastupdate=lastupdate)
+        if not isinstance(pagina, list) or not pagina:
+            break
+        if str(pagina[0]) == chave_primeiro:
+            print(f"[SINCRONIZAR ESTOQUE] Codigo {codigo}: HOS ignorou o offset ({offset}) - parando paginacao")
+            break
+        todos.extend(pagina)
+        if len(pagina) < tamanho_pagina:
+            break
+        offset += len(pagina)
+
+    print(f"[SINCRONIZAR ESTOQUE] Codigo {codigo}: paginacao concluida com {len(todos)} produto(s)")
+    return todos
+
+
 def _obter_mapas():
     """Retorna (mapa_produtos, mapa_unidades), recarregando do Supabase so
     quando o cache venceu."""
@@ -253,7 +293,7 @@ def sincronizar_uma_vez():
         marca_desta_consulta = int(agora) - MARGEM_LASTUPDATE_SEGUNDOS
 
         try:
-            itens = get_estoque(codigo, lastupdate=lastupdate)
+            itens = _buscar_estoque_paginado(codigo, lastupdate)
         except Exception as e:
             print(f"[SINCRONIZAR ESTOQUE] Erro ao buscar /estoque do codigo {codigo}:", e)
             continue
