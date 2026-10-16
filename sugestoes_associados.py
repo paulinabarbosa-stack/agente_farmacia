@@ -8,8 +8,8 @@ Como funciona (um lote por vez, chamado pelo job de sincronizacao de estoque):
 2. Pede pra IA (gpt-4o-mini) ate 2 TIPOS de produto complementar (ex: "vitamina
    c", "soro de reidratacao") - a IA NAO escolhe produto especifico. Cada ideia
    vem com uma nota de confianca de 1 a 5; so ficam as de nota 3 ou mais.
-3. Procura no catalogo real um produto com esse termo, com estoque, e grava na
-   tabela sugestoes_associados com status 'pendente'.
+3. Procura no catalogo real um produto com esse termo (ignorando acentos), com
+   estoque, e grava na tabela sugestoes_associados com status 'pendente'.
 
 NADA vai pra Isabela sem aprovacao: a Isabela so le a tabela
 produtos_associados, e uma sugestao so entra la quando o farmaceutico aprova.
@@ -23,6 +23,7 @@ estiver configurada no Railway.
 
 import os
 import json
+import unicodedata
 import requests
 
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
@@ -184,19 +185,32 @@ def _pedir_ideias_ia(nome, marca):
     return ideias
 
 
+def _padrao_sem_acento(texto):
+    """Prepara o texto para busca que ignora acentos.
+    Tira os acentos e troca cada vogal por '_' (coringa de 1 caractere do
+    ilike). Assim 'soro fisiologico' tambem encontra 'Soro Fisiologico'
+    com acento no catalogo."""
+    sem_acento = "".join(
+        c for c in unicodedata.normalize("NFD", texto) if unicodedata.category(c) != "Mn"
+    ).lower()
+    return "".join("_" if c in "aeiou" else c for c in sem_acento)
+
+
 def _buscar_no_catalogo(termo, excluir_id):
-    """Acha no catalogo um produto COM ESTOQUE que combine com o termo.
-    Tenta a expressao inteira; se nao achar, tenta a palavra mais longa."""
+    """Acha no catalogo um produto COM ESTOQUE que combine com o termo
+    (ignorando acentos). Tenta a expressao inteira; se nao achar, tenta a
+    palavra mais longa."""
     tentativas = [termo]
     palavras = sorted([p for p in termo.split() if len(p) >= 5], key=len, reverse=True)
     if palavras and palavras[0].lower() != termo.lower():
         tentativas.append(palavras[0])
 
     for t in tentativas:
+        padrao = _padrao_sem_acento(t)
         r = requests.get(
             f"{SUPABASE_URL}/rest/v1/produtos",
             headers=_headers(),
-            params={"nome": f"ilike.*{t}*", "select": "id,nome", "limit": 40},
+            params={"nome": f"ilike.*{padrao}*", "select": "id,nome", "limit": 40},
             timeout=20,
         )
         if not r.ok:
