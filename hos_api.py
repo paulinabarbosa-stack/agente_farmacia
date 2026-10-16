@@ -130,13 +130,17 @@ def get_unidades(codigo):
     return _hos_request(codigo, "/unidade")
 
 
-def get_estoque(codigo, limit=100000, offset=0):
+def get_estoque(codigo, limit=100000, offset=0, lastupdate=0):
     """GET /estoque - lista o estoque reportado pela unidade.
 
-    IMPORTANTE: o parametro offset da API HOS e quebrado (offset>0 sempre
-    retorna vazio, mesmo havendo mais registros por tras) - a mesma falha
-    ja confirmada em /produto/ativos. Por isso usamos sempre offset=0 com
-    um limit bem alto numa unica chamada, igual foi feito em
-    sincronizarProdutos.ts.
+    lastupdate: timestamp unix (segundos). A HOS devolve apenas os produtos
+    cujo estoque mudou DEPOIS desse momento. 0 = traz tudo (carga completa).
+    Orientacao da HOS (16/10/2026): usar limit alto + lastupdate e consultar
+    a cada 3-5 minutos (mais frequente que isso o Cloudflare pode bloquear).
+
+    IMPORTANTE: o parametro offset da API HOS ja se mostrou quebrado
+    (offset>0 retornava vazio) - por isso usamos offset=0 com limit alto.
     """
-    return _hos_request(codigo, f"/estoque?limit={limit}&offset={offset}")
+    return _hos_request(
+        codigo, f"/estoque?limit={limit}&offset={offset}&lastupdate={int(lastupdate)}"
+    )
