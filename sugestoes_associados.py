@@ -174,6 +174,7 @@ def _buscar_no_catalogo(termo, excluir_id):
             timeout=20,
         )
         if not r.ok:
+            print(f"[SUGESTOES]    Erro ao buscar '{t}' no catalogo: {r.status_code} {r.text[:200]}")
             continue
         candidatos = [p for p in r.json() if p.get("id") != excluir_id]
         if not candidatos:
@@ -187,6 +188,7 @@ def _buscar_no_catalogo(termo, excluir_id):
             timeout=20,
         )
         if not re_est.ok:
+            print(f"[SUGESTOES]    Erro ao ler estoque dos candidatos: {re_est.status_code} {re_est.text[:200]}")
             continue
         estoque_por_produto = {}
         for e in re_est.json():
@@ -236,15 +238,20 @@ def gerar_lote_de_sugestoes():
         _ja_analisados.add(produto_id)
         produto = _dados_produto(produto_id)
         if not produto or not produto.get("nome"):
+            print(f"[SUGESTOES] Produto {produto_id} sem nome no catalogo, pulado")
             continue
 
         ideias = _pedir_ideias_ia(produto["nome"], produto.get("marca"))
+        termos = [i["termo"] for i in ideias]
+        print(f"[SUGESTOES] '{produto['nome']}' -> IA sugeriu: {termos if termos else 'nada'}")
         for ideia in ideias:
             sugerido_id = _buscar_no_catalogo(ideia["termo"], produto_id)
             if not sugerido_id:
+                print(f"[SUGESTOES]    '{ideia['termo']}': nenhum produto com estoque no catalogo")
                 continue
             if _salvar_sugestao(produto_id, sugerido_id, ideia["motivo"]):
                 novas += 1
+                print(f"[SUGESTOES]    '{ideia['termo']}': sugestao salva")
 
     print(
         f"[SUGESTOES] Lote concluido: {len(lote)} produto(s) analisado(s), {novas} sugestao(oes) nova(s); "
