@@ -5,16 +5,18 @@ na tela "Produtos Associados" do VidaFarma.
 
 Como funciona (um lote por vez, chamado pelo job de sincronizacao de estoque):
 1. Pega produtos que TEM ESTOQUE e ainda nao foram analisados.
-2. Pede pra IA (gpt-4o-mini) ate 3 TIPOS de produto complementar (ex: "soro
-   fisiologico", "protetor solar") - a IA NAO escolhe produto especifico.
+2. Pede pra IA (gpt-4o-mini) ate 2 TIPOS de produto complementar (ex: "vitamina
+   c", "soro fisiologico") - a IA NAO escolhe produto especifico. Cada ideia
+   vem com uma nota de confianca de 1 a 5; so ficam as de nota 4 ou 5.
 3. Procura no catalogo real um produto com esse termo, com estoque, e grava na
    tabela sugestoes_associados com status 'pendente'.
 
 NADA vai pra Isabela sem aprovacao: a Isabela so le a tabela
 produtos_associados, e uma sugestao so entra la quando o farmaceutico aprova.
 
-Seguranca: a IA so sugere COMPLEMENTARES (nunca substitutos) e e instruida a
-nao sugerir medicamentos que precisam de receita.
+Seguranca: a IA so sugere COMPLEMENTARES (nunca substitutos). Produtos que
+precisam de receita, controlados, antibioticos, corticoides e de uso
+dermatologico especifico NAO recebem sugestao.
 
 LIGADO/DESLIGADO: so roda se a variavel de ambiente SUGESTOES_ATIVAS=true
 estiver configurada no Railway.
@@ -29,7 +31,8 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
 PRODUTOS_POR_LOTE = 10          # quantos produtos analisa por ciclo (5 min)
-MAX_SUGESTOES_POR_PRODUTO = 3
+MAX_SUGESTOES_POR_PRODUTO = 2
+CONFIANCA_MINIMA = 4            # so grava ideias com nota >= 4 (escala 1 a 5)
 MODELO = "gpt-4o-mini"
 
 # Produtos que ja foram analisados nesta execucao (evita repetir a mesma
@@ -118,21 +121,32 @@ def _dados_produto(produto_id):
 
 def _pedir_ideias_ia(nome, marca):
     """Pergunta pra IA que TIPOS de produto combinam com esse. Retorna lista
-    de {"termo": str, "motivo": str}."""
+    de {"termo": str, "motivo": str} ja filtrada por confianca."""
     prompt = (
-        "Voce ajuda o farmaceutico de uma drogaria brasileira a montar ofertas de produtos "
-        "COMPLEMENTARES (itens que costumam ser comprados junto).\n\n"
+        "Voce e um farmaceutico experiente de uma drogaria brasileira. Sua tarefa e indicar produtos "
+        "COMPLEMENTARES: itens que o farmaceutico recomendaria NO BALCAO para quem esta comprando o "
+        "produto abaixo, porque ajudam no MESMO problema de saude ou no mesmo tratamento.\n\n"
         f"Produto: {nome}" + (f" (marca {marca})" if marca else "") + "\n\n"
-        f"Sugira ate {MAX_SUGESTOES_POR_PRODUTO} TIPOS de produto complementar. Regras:\n"
-        "- Responda so com produtos de venda livre (sem receita): higiene, cuidado com a pele, "
-        "hidratacao, vitaminas, curativos, soro, protetor solar, etc.\n"
-        "- NUNCA sugira medicamento que precise de receita, controlado, antibiotico ou "
-        "outro medicamento para a mesma finalidade (isso seria substituto, nao complementar).\n"
-        "- Se o produto nao tiver complementar claro e seguro, devolva lista vazia.\n"
-        '- "termo" e a palavra de busca no catalogo: 1 ou 2 palavras, generica, sem marca '
-        '(ex: "soro fisiologico", "protetor solar").\n'
-        '- "motivo" e uma frase curta em portugues explicando por que combina.\n\n'
-        'Responda SOMENTE com JSON: {"sugestoes": [{"termo": "...", "motivo": "..."}]}'
+        "REGRAS (siga todas):\n"
+        "1. Se o produto exige receita, e controlado, antibiotico, corticoide (ex: dexametasona, "
+        "betametasona), anti-inflamatorio de uso sob prescricao, ou e de uso dermatologico "
+        "especifico, devolva a lista VAZIA.\n"
+        "2. So sugira item de venda livre que tenha ligacao DIRETA com a condicao que o produto trata "
+        "(ex: para tosse com catarro, sugerir vitamina C ou xarope de apoio; para curativo, sugerir "
+        "antisseptico). Nao use a ligacao generica 'faz bem a saude'.\n"
+        "3. NAO sugira itens genericos so para preencher: hidratante, protetor solar, soro "
+        "fisiologico e vitaminas sao proibidos, a menos que tenham ligacao direta e clara com o "
+        "produto.\n"
+        "4. NUNCA sugira outro medicamento para a mesma finalidade (isso seria substituto, nao "
+        "complementar).\n"
+        f"5. No maximo {MAX_SUGESTOES_POR_PRODUTO} sugestoes. Menos e melhor: se nao houver um "
+        "complementar claro, devolva lista vazia. Lista vazia e uma resposta correta e comum.\n"
+        '6. "termo" e a palavra de busca no catalogo: 1 ou 2 palavras, generica, sem marca '
+        '(ex: "vitamina c", "antisseptico").\n'
+        '7. "motivo" e uma frase curta em portugues explicando a ligacao direta com o produto.\n'
+        '8. "confianca" e um numero de 1 a 5: 5 = recomendacao classica e segura; 4 = boa; '
+        "3 ou menos = duvidosa (nesse caso, nem inclua).\n\n"
+        'Responda SOMENTE com JSON: {"sugestoes": [{"termo": "...", "motivo": "...", "confianca": 5}]}'
     )
     r = requests.post(
         "https://api.openai.com/v1/chat/completions",
@@ -141,7 +155,7 @@ def _pedir_ideias_ia(nome, marca):
             "model": MODELO,
             "messages": [{"role": "user", "content": prompt}],
             "response_format": {"type": "json_object"},
-            "temperature": 0.2,
+            "temperature": 0,
         },
         timeout=60,
     )
@@ -159,7 +173,11 @@ def _pedir_ideias_ia(nome, marca):
     for item in itens[:MAX_SUGESTOES_POR_PRODUTO]:
         termo = str(item.get("termo", "")).strip()
         motivo = str(item.get("motivo", "")).strip()
-        if termo:
+        try:
+            confianca = int(item.get("confianca", 0))
+        except (TypeError, ValueError):
+            confianca = 0
+        if termo and confianca >= CONFIANCA_MINIMA:
             ideias.append({"termo": termo, "motivo": motivo})
     return ideias
 
