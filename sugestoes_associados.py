@@ -99,14 +99,20 @@ def _produtos_candidatos():
 
 
 def _dados_produto(produto_id):
+    """Le o nome do produto. (Nao pede 'marca': a coluna nao existe na tabela
+    produtos e o Supabase devolvia erro.)"""
     r = requests.get(
         f"{SUPABASE_URL}/rest/v1/produtos",
         headers=_headers(),
-        params={"id": f"eq.{produto_id}", "select": "id,nome,marca", "limit": 1},
+        params={"id": f"eq.{produto_id}", "select": "id,nome", "limit": 1},
         timeout=20,
     )
-    if r.ok and r.json():
-        return r.json()[0]
+    if not r.ok:
+        print(f"[SUGESTOES] Erro ao ler produto {produto_id}: {r.status_code} {r.text[:200]}")
+        return None
+    dados = r.json()
+    if dados:
+        return dados[0]
     return None
 
 
