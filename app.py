@@ -236,6 +236,25 @@ def numero_e_teste(number):
     return any(apenas_digitos.endswith(t[-8:]) for t in NUMEROS_TESTE)
 
 
+# Numeros de testadores (ex.: funcionarios da farmacia) que PODEM fazer pedidos de
+# verdade no sistema (aparecem em Pedidos, Financeiro, Separacao e Entregas), mas
+# que NAO baixam estoque (nao gravam em "vendas"). Ficam numa variavel de ambiente
+# do Railway (NUMEROS_TESTE_SEM_BAIXA, separados por virgula) para nao expor
+# telefones no codigo publico. Exemplo: 5538999990001,5538999990002
+NUMEROS_TESTE_SEM_BAIXA = {
+    "".join(c for c in n if c.isdigit())
+    for n in os.environ.get("NUMEROS_TESTE_SEM_BAIXA", "").split(",")
+    if "".join(c for c in n if c.isdigit())
+}
+
+
+def numero_e_teste_sem_baixa(number):
+    apenas_digitos = "".join(c for c in (number or "") if c.isdigit())
+    if not apenas_digitos:
+        return False
+    return any(apenas_digitos.endswith(t[-8:]) for t in NUMEROS_TESTE_SEM_BAIXA)
+
+
 ultimo_cliente_transferido = None
 
 CONTROLADOS_PALAVRAS_CHAVE = [
@@ -1143,6 +1162,9 @@ def escolher_loja_para_produto(produto_id):
 def registrar_venda(number, produto, quantidade, valor_unitario, unidade_id=None, produto_id=None):
     if numero_e_teste(number):
         print(f"[MODO TESTE] Venda NAO gravada (numero de teste {number}): produto={produto}, qtd={quantidade}")
+        return
+    if numero_e_teste_sem_baixa(number):
+        print(f"[MODO TESTE] Venda NAO gravada, estoque preservado (testador {number}): produto={produto}, qtd={quantidade}")
         return
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return
