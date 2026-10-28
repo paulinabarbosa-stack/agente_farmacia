@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 import pytz
 
 from sincronizar_estoque import verificar_sincronizacao_estoque
+from catalogo_real import contexto_catalogo
 
 app = Flask(__name__)
 
@@ -2838,6 +2839,15 @@ def ask_openai(number, text):
             f"R$ {valor_negociado_reforco_msg:.2f} para o produto em negociacao (em vez do preco "
             "de tabela). Use EXATAMENTE esse valor ao confirmar ou fechar esse pedido."
         )
+
+    try:
+        anteriores = [m["content"] for m in historico[number][:-1] if m.get("role") == "user"]
+        bloco_catalogo = contexto_catalogo(text, anteriores)
+        if bloco_catalogo:
+            print(f"[CATALOGO] contexto real injetado para {number}")
+            instrucao += bloco_catalogo
+    except Exception as e:
+        print("[CATALOGO] falha ao injetar:", e)
 
     messages = [{"role": "system", "content": instrucao}] + historico[number][-12:]
 
