@@ -12,7 +12,7 @@ import requests
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
 
-MAX_PRODUTOS = 8
+MAX_PRODUTOS = 30
 
 PALAVRAS_IGNORADAS = {
     "tem", "tenho", "temos", "quero", "queria", "gostaria", "preciso", "precisa", "voces",
@@ -27,7 +27,7 @@ PALAVRAS_IGNORADAS = {
     "unidades", "comprimido", "comprimidos", "capsula", "capsulas", "ainda", "tambem",
     "quais", "qual", "como", "esta", "estao", "vai", "vou", "muito", "tudo", "certo",
     "claro", "ok", "blz", "beleza", "obg", "vlw", "valeu", "agora", "hoje", "amanha",
-    "preciso", "gostei", "pegar", "levar", "leva", "manda", "mandar", "envia", "enviar",
+    "preciso", "gostei", "laboratorio", "lab", "marca", "generico", "similar", "referencia", "opcao", "opcoes", "outras", "gostaria", "alguma", "algum", "aquele", "aquela", "mesmo", "mesma", "pegar", "levar", "leva", "manda", "mandar", "envia", "enviar",
 }
 
 
@@ -69,7 +69,7 @@ def _buscar_produtos(tokens):
     r = requests.get(
         f"{SUPABASE_URL}/rest/v1/produtos",
         headers=_headers(),
-        params={"and": f"({filtros})", "select": "id,nome,preco", "order": "nome", "limit": 60},
+        params={"and": f"({filtros})", "select": "id,nome,preco", "order": "nome", "limit": 120},
         timeout=15,
     )
     if not r.ok:
@@ -123,6 +123,7 @@ def contexto_catalogo(texto_atual, textos_anteriores=None):
                 extra += [x for x in _tokens(t) if x not in extra and x not in tokens]
             if extra:
                 tentativas.insert(0, tokens + extra[:2])
+                tentativas.append(extra[:2])  # ex.: marca que nao existe: mostra o que ha do produto
         achados = []
         for tk in tentativas:
             achados = _com_estoque(_buscar_produtos(tk))
@@ -148,7 +149,7 @@ def contexto_catalogo(texto_atual, textos_anteriores=None):
             "REGRAS DESTE CATALOGO: (1) Use somente nome, dosagem e preco EXATAMENTE como "
             "listados; nunca invente nem troque dosagem, apresentacao ou marca. "
             "(2) Se houver varias opcoes (dosagens/marcas diferentes), mostre as principais "
-            "e pergunte qual o cliente quer, sem escolher por ele. (3) Se o cliente nao disse "
+            "e pergunte qual o cliente quer, sem escolher por ele. LISTE TODAS as dosagens diferentes que aparecem no catalogo (ex.: 10mg, 20mg, 40mg, 80mg), nao so as primeiras; se houver varias marcas da mesma dosagem, pode citar so as marcas e a faixa de preco. (3) Se o cliente nao disse "
             "a dosagem e ela muda o produto, pergunte antes de fechar. (4) Nao diga a loja ao "
             "cliente a menos que ele pergunte; basta confirmar que temos. (5) Medicamentos que "
             "exigem receita continuam seguindo a regra de receita do seu roteiro. "
