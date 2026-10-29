@@ -66,7 +66,14 @@ def _headers():
 
 
 SINONIMOS = {
-    "xarope": ["xarope", "xpe"],
+    "fralda": ["fralda", "frd"],
+    "fraldas": ["fralda", "frd"],
+    "absorvente": ["absorvente", "abs"],
+    "shampoo": ["shampoo", "xampu", "sh "],
+    "condicionador": ["condicionador", "cond"],
+    "protetor": ["protetor", "prot"],
+    "comprimido": ["comprimido", "cpr", "comp"],
+    "xarope": ["xarope", "xpe", "sol", "susp"],
     "gotas": ["gotas", "gts"],
     "solucao": ["solucao", "sol"],
     "suspensao": ["suspensao", "susp"],
@@ -144,20 +151,20 @@ def _corrigir(tokens):
 
 
 def _procurar(tokens):
-    """Procura produtos COM estoque. A 1a palavra e o produto (nunca e solta).
-    Se nao achar com todas, vai soltando as palavras do final (marca, tamanho,
-    dosagem), uma por vez."""
+    """Procura produtos COM estoque. Devolve (achados, palavras_usadas).
+    A 1a palavra e o produto. Se nao achar com todas, vai soltando as
+    palavras do final (marca, tamanho, dosagem); se so a 1a palavra for
+    solta no inicio, tenta sem ela."""
     tokens = _corrigir(tokens)[:4]
     if not tokens:
-        return []
-    # tenta com a 1a palavra como produto; se nada, tenta sem ela (palavra solta no inicio)
+        return [], []
     for ini in range(min(2, len(tokens))):
         resto = tokens[ini:]
         for k in range(len(resto), 0, -1):
             achados = _com_estoque(_buscar_produtos(resto[:k]))
             if achados:
-                return achados
-    return []
+                return achados, resto[:k]
+    return [], []
 
 
 def _segmentos(texto):
@@ -192,7 +199,7 @@ REGRAS = (
     "(3) Se a dosagem ou o tipo muda o produto e o cliente nao disse, pergunte antes de fechar. "
     "(4) Nao diga a loja ao cliente a menos que ele pergunte. "
     "(5) Medicamentos que exigem receita seguem a regra de receita do roteiro. "
-    "(6) Itens marcados como ENCONTRADO neste catalogo existem: NAO diga que nao temos e NAO use "
+    "(6) Itens marcados como ENCONTRADO ou PARCIAL neste catalogo existem: NAO diga que nao temos e NAO use "
     "TRANSFERIR_ENCOMENDA para eles. "
     "(7) A tabela fixa de precos do roteiro tem valores ESTIMADOS e NAO vale mais para os produtos "
     "pedidos nesta mensagem: use SOMENTE os precos deste catalogo. Itens marcados NAO ENCONTRADO: mesmo que "
@@ -231,18 +238,25 @@ def contexto_catalogo(texto_atual, textos_anteriores=None):
             resultados = list(ex.map(_procurar, segmentos))
         limite = MAX_PRODUTOS if len(segmentos) == 1 else 12
         partes = []
-        algum = False
-        for tk, achados in zip(segmentos, resultados):
-            pedido = " ".join(_corrigir(tk))
-            if achados:
-                algum = True
+        for tk, (achados, usados) in zip(segmentos, resultados):
+            tk = _corrigir(tk)[:4]
+            pedido = " ".join(tk)
+            if not achados:
+                partes.append(f"NAO ENCONTRADO NO ESTOQUE - cliente pediu: \"{pedido}\"")
+            elif len(usados) < len(tk):
+                faltou = " ".join(t for t in tk if t not in usados)
+                partes.append(
+                    f"PARCIAL - cliente pediu: \"{pedido}\". NAO existe no estoque com \"{faltou}\"; "
+                    f"abaixo ha so itens de \"{' '.join(usados)}\" (NAO sao o que o cliente pediu: "
+                    f"avise que \"{faltou}\" nao esta disponivel e pergunte se quer uma destas opcoes):\n"
+                    + "\n".join(_linhas(achados, limite))
+                )
+            else:
                 partes.append(
                     f"ENCONTRADO - cliente pediu: \"{pedido}\" -> {len(achados)} item(ns) com estoque:\n"
                     + "\n".join(_linhas(achados, limite))
                 )
-            else:
-                partes.append(f"NAO ENCONTRADO NO ESTOQUE - cliente pediu: \"{pedido}\"")
-        print(f"[CATALOGO] segmentos={len(segmentos)} encontrados={sum(1 for r in resultados if r)}")
+        print(f"[CATALOGO] segmentos={len(segmentos)} encontrados={sum(1 for r in resultados if r[0])}")
         return (
             "\n\nCATALOGO REAL DA FARMACIA (consultado agora no estoque; use ISTO para esta mensagem "
             "do cliente, tem prioridade sobre a tabela fixa de precos):\n"
