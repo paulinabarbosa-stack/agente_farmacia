@@ -1264,7 +1264,7 @@ def criar_pedido(number, dados_venda, unidade_id=None):
 
 
 def criar_pedido_com_itens(number, nome_cliente, endereco, forma_pagamento, itens, valor_total, unidade_id=None):
-    if numero_e_teste(number):
+    if numero_e_teste(number) and not numero_e_teste_sem_baixa(number):
         print(f"[MODO TESTE] Pedido NAO gravado (numero de teste {number})")
         return
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
