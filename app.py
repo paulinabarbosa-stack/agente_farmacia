@@ -1142,7 +1142,27 @@ def buscar_produto_por_nome(nome_produto):
             "apikey": SUPABASE_ANON_KEY,
             "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
         }
-        primeira_palavra = nome_produto.strip().split(" ")[0]
+        nome_limpo = nome_produto.strip()
+        if not nome_limpo:
+            return None
+        # 1) tenta casar o nome completo (nome ou descricao completa do HOS)
+        try:
+            exato = requests.get(
+                f"{SUPABASE_URL}/rest/v1/produtos",
+                headers=headers,
+                params={
+                    "or": f"(nome.ilike.{nome_limpo},descricao_completa.ilike.{nome_limpo})",
+                    "select": "id",
+                    "limit": 1,
+                },
+                timeout=15,
+            )
+            if exato.ok and exato.json():
+                return exato.json()[0]["id"]
+        except Exception as e:
+            print("AVISO busca exata produto:", e)
+        # 2) fallback antigo: primeira palavra
+        primeira_palavra = nome_limpo.split(" ")[0]
         if not primeira_palavra:
             return None
         params = f"nome=ilike.*{primeira_palavra}*&select=id,nome&limit=5"

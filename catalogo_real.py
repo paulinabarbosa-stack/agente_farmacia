@@ -103,7 +103,7 @@ def _buscar_produtos(tokens):
     r = requests.get(
         f"{SUPABASE_URL}/rest/v1/produtos",
         headers=_headers(),
-        params={"and": f"({filtros})", "select": "id,nome,preco", "order": "nome", "limit": 120},
+        params={"and": f"({filtros})", "select": "id,nome,preco,preco_venda,descricao_completa", "order": "nome", "limit": 120},
         timeout=15,
     )
     if not r.ok:
@@ -189,8 +189,10 @@ def _segmentos(texto):
 def _linhas(achados, limite):
     linhas = []
     for p in achados[:limite]:
-        preco = float(p.get("preco") or 0)
-        linhas.append(f"  - {p['nome']} | R$ {preco:.2f} | lojas: {', '.join(p['lojas'])}")
+        # preco_venda = menor preco praticado (promocao/desconto); cai para o preco de lista
+        preco = float(p.get("preco_venda") or p.get("preco") or 0)
+        nome_exibido = (p.get("descricao_completa") or "").strip() or p["nome"]
+        linhas.append(f"  - {nome_exibido} | R$ {preco:.2f} | lojas: {', '.join(p['lojas'])}")
     if len(achados) > limite:
         linhas.append(f"  (+ {len(achados) - limite} outros itens parecidos nao listados)")
     return linhas
