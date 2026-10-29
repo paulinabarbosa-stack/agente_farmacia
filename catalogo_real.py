@@ -27,7 +27,7 @@ PALAVRAS_IGNORADAS = {
     "unidades", "comprimido", "comprimidos", "capsula", "capsulas", "ainda", "tambem",
     "quais", "qual", "como", "esta", "estao", "vai", "vou", "muito", "tudo", "certo",
     "claro", "ok", "blz", "beleza", "obg", "vlw", "valeu", "agora", "hoje", "amanha",
-    "preciso", "gostei", "laboratorio", "lab", "marca", "generico", "similar", "referencia", "opcao", "opcoes", "outras", "gostaria", "alguma", "algum", "aquele", "aquela", "mesmo", "mesma", "pegar", "levar", "leva", "manda", "mandar", "envia", "enviar",
+    "preciso", "gostei", "teria", "seria", "queria", "quer", "ser", "tinha", "existe", "haveria", "entao", "mesmo", "so", "porem", "mas", "tambem", "talvez", "acho", "pois", "devia", "deveria", "laboratorio", "lab", "marca", "generico", "similar", "referencia", "opcao", "opcoes", "outras", "gostaria", "alguma", "algum", "aquele", "aquela", "mesmo", "mesma", "pegar", "levar", "leva", "manda", "mandar", "envia", "enviar",
 }
 
 
@@ -44,6 +44,8 @@ def _padrao(token):
 
 def _tokens(texto):
     t = _sem_acento(texto)
+    # "40 mg" / "40 Mg" -> "40mg"
+    t = re.sub(r"(\d)\s*(mg|mcg|ml|ui|g)\b", r"\1\2", t)
     achados = re.findall(r"[a-z0-9]+", t)
     saida = []
     for p in achados:
@@ -117,7 +119,7 @@ def contexto_catalogo(texto_atual, textos_anteriores=None):
             return ""
         tentativas = [tokens]
         # mensagem curta (ex.: "40mg", "o da cimed"): junta com o que veio antes
-        if textos_anteriores and len(tokens) <= 2:
+        if textos_anteriores and len(tokens) <= 3:
             extra = []
             for t in reversed(textos_anteriores[-3:]):
                 extra += [x for x in _tokens(t) if x not in extra and x not in tokens]
