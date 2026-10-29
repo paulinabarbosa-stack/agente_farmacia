@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 import pytz
 
 from sincronizar_estoque import verificar_sincronizacao_estoque
+from sincronizar_produtos import verificar_sincronizacao_produtos
 from catalogo_real import contexto_catalogo
 
 app = Flask(__name__)
@@ -2976,6 +2977,7 @@ threading.Thread(target=verificar_seguimentos, daemon=True).start()
 threading.Thread(target=verificar_lembretes_recompra, daemon=True).start()
 threading.Thread(target=verificar_reaberturas_agendadas, daemon=True).start()
 threading.Thread(target=verificar_sincronizacao_estoque, daemon=True).start()
+threading.Thread(target=verificar_sincronizacao_produtos, daemon=True).start()
 
 
 if __name__ == "__main__":
