@@ -15,6 +15,9 @@ SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
 MAX_PRODUTOS = 30
 
 PALAVRAS_IGNORADAS = {
+    "duas", "tres", "quatro", "cinco", "seis", "sete", "oito", "nove", "dez", "onze", "doze",
+    "meia", "duzia", "pacote", "pacotes", "frasco", "frascos", "tubo", "tubos", "blister", "cartelas",
+    "preciso", "precisamos", "queremos", "necessito", "levar", "pegar", "adicionar", "incluir", "tambem",
     "tem", "tenho", "temos", "quero", "queria", "gostaria", "preciso", "precisa", "voces",
     "vcs", "para", "pra", "uma", "umas", "uns", "com", "sem", "por", "favor", "pode",
     "poderia", "verificar", "verifica", "valor", "preco", "quanto", "custa", "fica",
@@ -147,10 +150,13 @@ def _procurar(tokens):
     tokens = _corrigir(tokens)[:4]
     if not tokens:
         return []
-    for k in range(len(tokens), 0, -1):
-        achados = _com_estoque(_buscar_produtos(tokens[:k]))
-        if achados:
-            return achados
+    # tenta com a 1a palavra como produto; se nada, tenta sem ela (palavra solta no inicio)
+    for ini in range(min(2, len(tokens))):
+        resto = tokens[ini:]
+        for k in range(len(resto), 0, -1):
+            achados = _com_estoque(_buscar_produtos(resto[:k]))
+            if achados:
+                return achados
     return []
 
 
@@ -195,6 +201,9 @@ REGRAS = (
     "(9) Se o cliente pediu uma dosagem, tamanho ou apresentacao (ex.: 40mg, tamanho G) e NENHUM item "
     "listado tem exatamente isso, diga com clareza que essa opcao nao esta disponivel e mostre o que ha, "
     "sem fingir que e a mesma coisa. "
+    "(10) NUNCA informe um preco que nao esteja escrito neste catalogo. Se um item for NAO ENCONTRADO, nao "
+    "cite preco dele, nao use precos de memoria, da tabela fixa ou de mensagens antigas desta conversa. "
+    "Ao confirmar um pedido, use o nome completo e o preco exatos de uma linha deste catalogo. "
     "(8) NUNCA diga 'so um instante', 'ja volto', 'vou buscar o preco' ou 'vou verificar e retorno': voce "
     "nao consegue voltar depois. Responda tudo o que sabe AGORA, na mesma mensagem, e peca so o que "
     "realmente falta ao cliente."
