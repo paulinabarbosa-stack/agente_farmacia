@@ -62,12 +62,32 @@ def _headers():
     return {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
 
 
+SINONIMOS = {
+    "xarope": ["xarope", "xpe"],
+    "gotas": ["gotas", "gts"],
+    "solucao": ["solucao", "sol"],
+    "suspensao": ["suspensao", "susp"],
+    "pomada": ["pomada", "pom"],
+    "creme": ["creme", "cr"],
+    "colirio": ["colirio", "col"],
+    "efervescente": ["efervescente", "efev", "efer"],
+    "injetavel": ["injetavel", "inj"],
+}
+
+
+def _filtro_token(t):
+    var = SINONIMOS.get(t)
+    if not var:
+        return f"nome.ilike.*{_padrao(t)}*"
+    return "or(" + ",".join(f"nome.ilike.*{_padrao(v)}*" for v in var) + ")"
+
+
 def _buscar_produtos(tokens):
-    """Produtos cujo nome contem TODOS os tokens (ate 3, os mais longos primeiro)."""
-    usados = sorted(tokens, key=len, reverse=True)[:3]
+    """Produtos cujo nome contem TODAS as palavras (ate 4)."""
+    usados = list(tokens)[:4]
     if not usados:
         return []
-    filtros = ",".join(f"nome.ilike.*{_padrao(t)}*" for t in usados)
+    filtros = ",".join(_filtro_token(t) for t in usados)
     r = requests.get(
         f"{SUPABASE_URL}/rest/v1/produtos",
         headers=_headers(),
@@ -121,32 +141,16 @@ def _corrigir(tokens):
 
 
 def _procurar(tokens):
-    """Procura produtos COM estoque. Se nao achar com todas as palavras, vai
-    soltando palavras (uma por vez) e depois tenta as palavras sozinhas."""
-    tokens = sorted(_corrigir(tokens), key=len, reverse=True)[:4]
+    """Procura produtos COM estoque. A 1a palavra e o produto (nunca e solta).
+    Se nao achar com todas, vai soltando as palavras do final (marca, tamanho,
+    dosagem), uma por vez."""
+    tokens = _corrigir(tokens)[:4]
     if not tokens:
         return []
-    vistos = set()
-
-    def tenta(tk):
-        chave = tuple(sorted(tk))
-        if not tk or chave in vistos:
-            return []
-        vistos.add(chave)
-        return _com_estoque(_buscar_produtos(list(tk)))
-
-    achados = tenta(tokens[:3])
-    if achados:
-        return achados
-    if len(tokens) > 1:
-        for i in range(min(len(tokens), 3)):
-            achados = tenta([t for j, t in enumerate(tokens) if j != i][:3])
-            if achados:
-                return achados
-        for t in tokens[:2]:
-            achados = tenta([t])
-            if achados:
-                return achados
+    for k in range(len(tokens), 0, -1):
+        achados = _com_estoque(_buscar_produtos(tokens[:k]))
+        if achados:
+            return achados
     return []
 
 
@@ -188,6 +192,9 @@ REGRAS = (
     "pedidos nesta mensagem: use SOMENTE os precos deste catalogo. Itens marcados NAO ENCONTRADO: mesmo que "
     "aparecam na tabela fixa, siga a regra de ENCOMENDA (pergunte o nome se ainda nao souber, depois "
     "TRANSFERIR_ENCOMENDA), mas SO depois de responder o que for possivel dos outros itens do pedido. "
+    "(9) Se o cliente pediu uma dosagem, tamanho ou apresentacao (ex.: 40mg, tamanho G) e NENHUM item "
+    "listado tem exatamente isso, diga com clareza que essa opcao nao esta disponivel e mostre o que ha, "
+    "sem fingir que e a mesma coisa. "
     "(8) NUNCA diga 'so um instante', 'ja volto', 'vou buscar o preco' ou 'vou verificar e retorno': voce "
     "nao consegue voltar depois. Responda tudo o que sabe AGORA, na mesma mensagem, e peca so o que "
     "realmente falta ao cliente."
