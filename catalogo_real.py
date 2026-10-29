@@ -27,7 +27,7 @@ PALAVRAS_IGNORADAS = {
     "unidades", "comprimido", "comprimidos", "capsula", "capsulas", "ainda", "tambem",
     "quais", "qual", "como", "esta", "estao", "vai", "vou", "muito", "tudo", "certo",
     "claro", "ok", "blz", "beleza", "obg", "vlw", "valeu", "agora", "hoje", "amanha",
-    "preciso", "gostei", "teria", "seria", "queria", "quer", "ser", "tinha", "existe", "haveria", "entao", "mesmo", "so", "porem", "mas", "tambem", "talvez", "acho", "pois", "devia", "deveria", "laboratorio", "lab", "marca", "generico", "similar", "referencia", "opcao", "opcoes", "outras", "gostaria", "alguma", "algum", "aquele", "aquela", "mesmo", "mesma", "pegar", "levar", "leva", "manda", "mandar", "envia", "enviar",
+    "preciso", "gostei", "tamanho", "tamanhos", "medicamentos", "produto", "produtos", "itens", "item", "dois", "tres", "quatro", "cinco", "pedir", "pedido", "somente", "apenas", "teria", "seria", "queria", "quer", "ser", "tinha", "existe", "haveria", "entao", "mesmo", "so", "porem", "mas", "tambem", "talvez", "acho", "pois", "devia", "deveria", "laboratorio", "lab", "marca", "generico", "similar", "referencia", "opcao", "opcoes", "outras", "gostaria", "alguma", "algum", "aquele", "aquela", "mesmo", "mesma", "pegar", "levar", "leva", "manda", "mandar", "envia", "enviar",
 }
 
 
@@ -109,56 +109,129 @@ def _com_estoque(produtos):
     return resultado
 
 
+ERROS_COMUNS = {
+    "flauda": "fralda", "fralsa": "fralda", "frauda": "fralda", "fraldas": "fralda",
+    "dipiron": "dipirona", "dipirina": "dipirona", "paracetamo": "paracetamol",
+    "atorvastatina": "atorvastatina", "atorvastatia": "atorvastatina",
+}
+
+
+def _corrigir(tokens):
+    return [ERROS_COMUNS.get(t, t) for t in tokens]
+
+
+def _procurar(tokens):
+    """Procura produtos COM estoque. Se nao achar com todas as palavras, vai
+    soltando palavras (uma por vez) e depois tenta as palavras sozinhas."""
+    tokens = sorted(_corrigir(tokens), key=len, reverse=True)[:4]
+    if not tokens:
+        return []
+    vistos = set()
+
+    def tenta(tk):
+        chave = tuple(sorted(tk))
+        if not tk or chave in vistos:
+            return []
+        vistos.add(chave)
+        return _com_estoque(_buscar_produtos(list(tk)))
+
+    achados = tenta(tokens[:3])
+    if achados:
+        return achados
+    if len(tokens) > 1:
+        for i in range(min(len(tokens), 3)):
+            achados = tenta([t for j, t in enumerate(tokens) if j != i][:3])
+            if achados:
+                return achados
+        for t in tokens[:2]:
+            achados = tenta([t])
+            if achados:
+                return achados
+    return []
+
+
+def _segmentos(texto):
+    """Divide a mensagem em pedaços, um por produto pedido
+    (ex.: '3 dipirona e 2 atorvastatina. e 1 fralda personal')."""
+    partes = re.split(r"[.;\n,]| e | mais | alem d[eo] | tambem ", " " + (texto or "") + " ", flags=re.I)
+    saida = []
+    for p in partes:
+        tk = _tokens(p)
+        if tk:
+            saida.append(tk)
+    return saida[:4]
+
+
+def _linhas(achados, limite):
+    linhas = []
+    for p in achados[:limite]:
+        preco = float(p.get("preco") or 0)
+        linhas.append(f"  - {p['nome']} | R$ {preco:.2f} | lojas: {', '.join(p['lojas'])}")
+    if len(achados) > limite:
+        linhas.append(f"  (+ {len(achados) - limite} outros itens parecidos nao listados)")
+    return linhas
+
+
+REGRAS = (
+    "REGRAS DESTE CATALOGO: (1) Use somente nome, dosagem e preco EXATAMENTE como listados; "
+    "nunca invente nem troque dosagem, apresentacao ou marca. "
+    "(2) Cada linha e uma apresentacao diferente (marca, quantidade de comprimidos). Se houver varias "
+    "opcoes, mostre cada uma com o nome completo e o preco dela, SEM inventar faixa de preco; se forem "
+    "muitas, mostre as principais e pergunte qual o cliente prefere. Liste TODAS as dosagens diferentes "
+    "(ex.: 10mg, 20mg, 40mg, 80mg), nao so as primeiras. "
+    "(3) Se a dosagem ou o tipo muda o produto e o cliente nao disse, pergunte antes de fechar. "
+    "(4) Nao diga a loja ao cliente a menos que ele pergunte. "
+    "(5) Medicamentos que exigem receita seguem a regra de receita do roteiro. "
+    "(6) Itens marcados como ENCONTRADO neste catalogo existem: NAO diga que nao temos e NAO use "
+    "TRANSFERIR_ENCOMENDA para eles. "
+    "(7) A tabela fixa de precos do roteiro tem valores ESTIMADOS e NAO vale mais para os produtos "
+    "pedidos nesta mensagem: use SOMENTE os precos deste catalogo. Itens marcados NAO ENCONTRADO: mesmo que "
+    "aparecam na tabela fixa, siga a regra de ENCOMENDA (pergunte o nome se ainda nao souber, depois "
+    "TRANSFERIR_ENCOMENDA), mas SO depois de responder o que for possivel dos outros itens do pedido. "
+    "(8) NUNCA diga 'so um instante', 'ja volto', 'vou buscar o preco' ou 'vou verificar e retorno': voce "
+    "nao consegue voltar depois. Responda tudo o que sabe AGORA, na mesma mensagem, e peca so o que "
+    "realmente falta ao cliente."
+)
+
+
 def contexto_catalogo(texto_atual, textos_anteriores=None):
     """Devolve um bloco de texto com produtos reais em estoque, ou ''."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return ""
     try:
-        tokens = _tokens(texto_atual)
-        if not tokens:
+        segmentos = _segmentos(texto_atual)
+        if not segmentos:
             return ""
-        tentativas = [tokens]
         # mensagem curta (ex.: "40mg", "o da cimed"): junta com o que veio antes
-        if textos_anteriores and len(tokens) <= 3:
+        if len(segmentos) == 1 and textos_anteriores and len(segmentos[0]) <= 3:
+            atual = segmentos[0]
             extra = []
             for t in reversed(textos_anteriores[-3:]):
-                extra += [x for x in _tokens(t) if x not in extra and x not in tokens]
+                extra += [x for x in _tokens(t) if x not in extra and x not in atual]
             if extra:
-                tentativas.insert(0, tokens + extra[:2])
-                tentativas.append(extra[:2])  # ex.: marca que nao existe: mostra o que ha do produto
-        achados = []
-        for tk in tentativas:
-            achados = _com_estoque(_buscar_produtos(tk))
+                segmentos = [atual + extra[:2]]
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=len(segmentos)) as ex:
+            resultados = list(ex.map(_procurar, segmentos))
+        limite = MAX_PRODUTOS if len(segmentos) == 1 else 12
+        partes = []
+        algum = False
+        for tk, achados in zip(segmentos, resultados):
+            pedido = " ".join(_corrigir(tk))
             if achados:
-                break
-        if not achados and len(tokens) > 1:
-            achados = _com_estoque(_buscar_produtos([max(tokens, key=len)]))
-        if not achados:
-            return ""
-        total = len(achados)
-        linhas = []
-        for p in achados[:MAX_PRODUTOS]:
-            preco = float(p.get("preco") or 0)
-            linhas.append(
-                f"- {p['nome']} | R$ {preco:.2f} | disponivel em: {', '.join(p['lojas'])}"
-            )
-        bloco = (
-            "\n\nCATALOGO REAL DA FARMACIA (consultado agora no estoque; use ISTO para esta "
-            "mensagem do cliente, tem prioridade sobre a tabela fixa de precos): "
-            f"{total} produto(s) com estoque encontrado(s)"
-            + (f", mostrando os {MAX_PRODUTOS} primeiros" if total > MAX_PRODUTOS else "")
-            + ":\n" + "\n".join(linhas) + "\n"
-            "REGRAS DESTE CATALOGO: (1) Use somente nome, dosagem e preco EXATAMENTE como "
-            "listados; nunca invente nem troque dosagem, apresentacao ou marca. "
-            "(2) Se houver varias opcoes (dosagens/marcas diferentes), mostre as principais "
-            "e pergunte qual o cliente quer, sem escolher por ele. LISTE TODAS as dosagens diferentes que aparecem no catalogo (ex.: 10mg, 20mg, 40mg, 80mg), nao so as primeiras; se houver varias marcas da mesma dosagem, pode citar so as marcas e a faixa de preco. (3) Se o cliente nao disse "
-            "a dosagem e ela muda o produto, pergunte antes de fechar. (4) Nao diga a loja ao "
-            "cliente a menos que ele pergunte; basta confirmar que temos. (5) Medicamentos que "
-            "exigem receita continuam seguindo a regra de receita do seu roteiro. "
-            "(6) Como o produto esta neste catalogo, NAO use TRANSFERIR_ENCOMENDA por ele "
-            "nem diga que nao temos."
+                algum = True
+                partes.append(
+                    f"ENCONTRADO - cliente pediu: \"{pedido}\" -> {len(achados)} item(ns) com estoque:\n"
+                    + "\n".join(_linhas(achados, limite))
+                )
+            else:
+                partes.append(f"NAO ENCONTRADO NO ESTOQUE - cliente pediu: \"{pedido}\"")
+        print(f"[CATALOGO] segmentos={len(segmentos)} encontrados={sum(1 for r in resultados if r)}")
+        return (
+            "\n\nCATALOGO REAL DA FARMACIA (consultado agora no estoque; use ISTO para esta mensagem "
+            "do cliente, tem prioridade sobre a tabela fixa de precos):\n"
+            + "\n".join(partes) + "\n" + REGRAS
         )
-        return bloco
     except Exception as e:
         print("[CATALOGO] erro:", e)
         return ""
