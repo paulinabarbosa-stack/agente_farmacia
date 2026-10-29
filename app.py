@@ -814,6 +814,35 @@ def buscar_conversa_humana_ativa(number):
         return None
 
 
+def conversa_humana_continua_aberta(number):
+    """True = ainda ha conversa humana aberta no banco; False = nao ha (foi
+    encerrada); None = nao deu para saber (erro) -> nao mexe em nada."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        return None
+    try:
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+        }
+        params = {
+            "cliente_telefone": f"eq.{number}",
+            "transferida_humano": "eq.true",
+            "atendimento_encerrado": "eq.false",
+            "select": "id",
+            "limit": "1",
+        }
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/conversas", headers=headers, params=params, timeout=15)
+        if not r.ok:
+            return None
+        dados = r.json()
+        if not isinstance(dados, list):
+            return None
+        return bool(dados)
+    except Exception as e:
+        print("ERRO ao confirmar conversa humana aberta:", e)
+        return None
+
+
 def inserir_mensagem_atendimento(conversa_id, remetente, texto):
     if not SUPABASE_URL or not SUPABASE_ANON_KEY or not conversa_id:
         return
@@ -2227,6 +2256,15 @@ def webhook():
 
         conversa_id_atual = conversa_ativa_id.get(number)
         esta_transferido = bool(number and transferido.get(number))
+
+        # Se a memoria diz "com humano" mas o banco ja nao tem conversa aberta
+        # (encerrada pelo painel ou direto no banco), libera a Isabela.
+        if esta_transferido and conversa_humana_continua_aberta(number) is False:
+            print(f"[LIBERADO] {number}: conversa humana ja encerrada no banco, Isabela volta a atender")
+            transferido[number] = False
+            conversa_ativa_id.pop(number, None)
+            conversa_id_atual = None
+            esta_transferido = False
 
         if number and not esta_transferido:
             conversa_ativa_no_banco = buscar_conversa_humana_ativa(number)
