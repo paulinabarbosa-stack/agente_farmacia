@@ -15,6 +15,8 @@ SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
 MAX_PRODUTOS = 30
 
 PALAVRAS_IGNORADAS = {
+    "querer", "quiser", "queira", "vamos", "podemos", "podem", "separa", "separar", "coloca", "colocar",
+    "bota", "botar", "mande", "levo", "levarei", "ficar", "fico", "ajuda", "ajudar", "saber", "falar",
     "duas", "tres", "quatro", "cinco", "seis", "sete", "oito", "nove", "dez", "onze", "doze",
     "meia", "duzia", "pacote", "pacotes", "frasco", "frascos", "tubo", "tubos", "blister", "cartelas",
     "preciso", "precisamos", "queremos", "necessito", "levar", "pegar", "adicionar", "incluir", "tambem",
@@ -113,25 +115,28 @@ def _buscar_produtos(tokens):
 def _com_estoque(produtos):
     if not produtos:
         return []
-    ids = ",".join(p["id"] for p in produtos)
-    r = requests.get(
-        f"{SUPABASE_URL}/rest/v1/estoque",
-        headers=_headers(),
-        params={
-            "produto_id": f"in.({ids})",
-            "quantidade": "gt.0",
-            "select": "produto_id,quantidade,unidades(nome)",
-            "limit": 1000,
-        },
-        timeout=15,
-    )
-    if not r.ok:
-        print(f"[CATALOGO] erro estoque: {r.status_code} {r.text[:150]}")
-        return []
     lojas = {}
-    for e in r.json():
-        nome_loja = (e.get("unidades") or {}).get("nome") or "loja"
-        lojas.setdefault(e["produto_id"], []).append(nome_loja)
+    # em lotes, para a URL nao ficar grande demais
+    for ini in range(0, len(produtos), 40):
+        lote = produtos[ini:ini + 40]
+        ids = ",".join(p["id"] for p in lote)
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/estoque",
+            headers=_headers(),
+            params={
+                "produto_id": f"in.({ids})",
+                "quantidade": "gt.0",
+                "select": "produto_id,quantidade,unidades(nome)",
+                "limit": 1000,
+            },
+            timeout=15,
+        )
+        if not r.ok:
+            print(f"[CATALOGO] erro estoque: {r.status_code} {r.text[:150]}")
+            continue
+        for e in r.json():
+            nome_loja = (e.get("unidades") or {}).get("nome") or "loja"
+            lojas.setdefault(e["produto_id"], []).append(nome_loja)
     resultado = []
     for p in produtos:
         if p["id"] in lojas:
@@ -151,26 +156,28 @@ def _corrigir(tokens):
 
 
 def _procurar(tokens):
-    """Procura produtos COM estoque. Devolve (achados, palavras_usadas).
-    A 1a palavra e o produto. Se nao achar com todas, vai soltando as
-    palavras do final (marca, tamanho, dosagem); se so a 1a palavra for
-    solta no inicio, tenta sem ela."""
+    """Procura produtos COM estoque. Devolve (achados, palavras_usadas, soltou_do_fim).
+    Tenta com todas as palavras; se nao achar, solta as do final (marca,
+    tamanho, dosagem). Se nada, tenta sem a 1a palavra (palavra solta no
+    inicio, ex.: 'vou querer ...'). So conta como PARCIAL quando soltou
+    palavras do FINAL."""
     tokens = _corrigir(tokens)[:4]
     if not tokens:
-        return [], []
+        return [], [], False
     for ini in range(min(2, len(tokens))):
         resto = tokens[ini:]
         for k in range(len(resto), 0, -1):
             achados = _com_estoque(_buscar_produtos(resto[:k]))
             if achados:
-                return achados, resto[:k]
-    return [], []
+                return achados, resto[:k], k < len(resto)
+    return [], [], False
 
 
 def _segmentos(texto):
     """Divide a mensagem em pedaços, um por produto pedido
     (ex.: '3 dipirona e 2 atorvastatina. e 1 fralda personal')."""
-    partes = re.split(r"[.;\n,]| e | mais | alem d[eo] | tambem ", " " + (texto or "") + " ", flags=re.I)
+    texto = re.sub(r"(\d),(\d)", r"\1.\2", texto or "")
+    partes = re.split(r"[.;\n,]| e | mais | alem d[eo] | tambem ", " " + texto + " ", flags=re.I)
     saida = []
     for p in partes:
         tk = _tokens(p)
@@ -238,12 +245,12 @@ def contexto_catalogo(texto_atual, textos_anteriores=None):
             resultados = list(ex.map(_procurar, segmentos))
         limite = MAX_PRODUTOS if len(segmentos) == 1 else 12
         partes = []
-        for tk, (achados, usados) in zip(segmentos, resultados):
+        for tk, (achados, usados, soltou) in zip(segmentos, resultados):
             tk = _corrigir(tk)[:4]
             pedido = " ".join(tk)
             if not achados:
                 partes.append(f"NAO ENCONTRADO NO ESTOQUE - cliente pediu: \"{pedido}\"")
-            elif len(usados) < len(tk):
+            elif soltou:
                 faltou = " ".join(t for t in tk if t not in usados)
                 partes.append(
                     f"PARCIAL - cliente pediu: \"{pedido}\". NAO existe no estoque com \"{faltou}\"; "
