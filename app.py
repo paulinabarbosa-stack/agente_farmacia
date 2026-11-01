@@ -789,6 +789,15 @@ def transferir_com_distribuicao_automatica(number, conversa_id_criada):
     inserir_mensagem_atendimento(conversa_id_criada, "atendente", mensagem_apresentacao)
 
 
+# Conversa com atendente humano parada por mais que isso e considerada esquecida:
+# a Isabela volta a atender sozinha (evita ficar muda por dias).
+HORAS_MAX_CONVERSA_HUMANA = int(os.environ.get("HORAS_MAX_CONVERSA_HUMANA", "12"))
+
+
+def limite_conversa_humana_recente():
+    return (datetime.now(pytz.utc) - timedelta(hours=HORAS_MAX_CONVERSA_HUMANA)).isoformat()
+
+
 def buscar_conversa_humana_ativa(number):
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return None
@@ -801,6 +810,7 @@ def buscar_conversa_humana_ativa(number):
             "cliente_telefone": f"eq.{number}",
             "transferida_humano": "eq.true",
             "atendimento_encerrado": "eq.false",
+            "criado_em": f"gte.{limite_conversa_humana_recente()}",
             "select": "id",
             "order": "criado_em.desc",
             "limit": "1",
@@ -829,6 +839,7 @@ def conversa_humana_continua_aberta(number):
             "cliente_telefone": f"eq.{number}",
             "transferida_humano": "eq.true",
             "atendimento_encerrado": "eq.false",
+            "criado_em": f"gte.{limite_conversa_humana_recente()}",
             "select": "id",
             "limit": "1",
         }
