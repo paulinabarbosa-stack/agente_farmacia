@@ -13,6 +13,7 @@ import pytz
 from sincronizar_estoque import verificar_sincronizacao_estoque
 from sincronizar_produtos import verificar_sincronizacao_produtos
 from catalogo_real import contexto_catalogo
+from catalogo_real import _nome_para_exibir as catalogo_nome_exibicao, _sem_acento as catalogo_sem_acento
 
 app = Flask(__name__)
 
@@ -1146,6 +1147,8 @@ def buscar_produto_complementar(produto_id):
 
 
 def buscar_produto_por_nome(nome_produto):
+    """Liga o nome falado pela Isabela (igual ao mostrado no catalogo, ex.:
+    'ATORVASTATINA CALCICA 40MG C/30CPR REV CIMED') ao produto certo do banco."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY or not nome_produto:
         return None
     try:
@@ -1156,32 +1159,44 @@ def buscar_produto_por_nome(nome_produto):
         nome_limpo = nome_produto.strip()
         if not nome_limpo:
             return None
-        # 1) tenta casar o nome completo (nome ou descricao completa do HOS)
-        try:
-            exato = requests.get(
-                f"{SUPABASE_URL}/rest/v1/produtos",
-                headers=headers,
-                params={
-                    "or": f"(nome.ilike.{nome_limpo},descricao_completa.ilike.{nome_limpo})",
-                    "select": "id",
-                    "limit": 1,
-                },
-                timeout=15,
-            )
-            if exato.ok and exato.json():
-                return exato.json()[0]["id"]
-        except Exception as e:
-            print("AVISO busca exata produto:", e)
-        # 2) fallback antigo: primeira palavra
-        primeira_palavra = nome_limpo.split(" ")[0]
-        if not primeira_palavra:
+
+        def norm(t):
+            return " ".join(re.findall(r"[a-z0-9]+", catalogo_sem_acento(t)))
+
+        alvo = norm(nome_limpo)
+        palavras = [p for p in alvo.split() if len(p) >= 3][:2] or alvo.split()[:1]
+        if not palavras:
             return None
-        params = f"nome=ilike.*{primeira_palavra}*&select=id,nome&limit=5"
-        r = requests.get(f"{SUPABASE_URL}/rest/v1/produtos?{params}", headers=headers, timeout=15)
+        filtros = ",".join(f"nome.ilike.*{p}*" for p in palavras)
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/produtos",
+            headers=headers,
+            params={
+                "and": f"({filtros})",
+                "select": "id,nome,descricao_completa,fabricante",
+                "limit": "60",
+            },
+            timeout=15,
+        )
         dados = r.json()
-        if not dados:
+        if not isinstance(dados, list) or not dados:
             print(f"AVISO: nenhum produto encontrado no banco para '{nome_produto}'")
             return None
+
+        # 1) nome exibido pelo catalogo igual ao falado
+        for p in dados:
+            if norm(catalogo_nome_exibicao(p)) == alvo or norm(p.get("nome")) == alvo:
+                return p["id"]
+        # 2) o que mais se parece (palavras em comum)
+        palavras_alvo = set(alvo.split())
+        melhor, pontos = None, 0
+        for p in dados:
+            exibido = set(norm(catalogo_nome_exibicao(p)).split())
+            ponto = len(palavras_alvo & exibido) - 0.1 * len(exibido - palavras_alvo)
+            if ponto > pontos:
+                melhor, pontos = p, ponto
+        if melhor:
+            return melhor["id"]
         return dados[0]["id"]
     except Exception as e:
         print("ERRO ao buscar produto por nome:", e)
