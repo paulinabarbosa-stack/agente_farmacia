@@ -92,10 +92,15 @@ SINONIMOS = {
 
 
 def _filtro_token(t):
-    var = SINONIMOS.get(t)
-    if not var:
-        return f"nome.ilike.*{_padrao(t)}*"
-    return "or(" + ",".join(f"nome.ilike.*{_padrao(v)}*" for v in var) + ")"
+    # procura no nome (que o HOS corta em 25 letras, ex.: "...40M") e tambem na
+    # descricao completa guardada na sincronizacao (ex.: "...40MG C/30CPR REV")
+    var = SINONIMOS.get(t, [t])
+    partes = []
+    for v in var:
+        p = _padrao(v)
+        partes.append(f"nome.ilike.*{p}*")
+        partes.append(f"descricao_completa.ilike.*{p}*")
+    return "or(" + ",".join(partes) + ")"
 
 
 def _buscar_produtos(tokens):
