@@ -209,7 +209,10 @@ def _linhas(achados, limite):
     for p in achados[:limite]:
         # preco_venda = menor preco praticado (promocao/desconto); cai para o preco de lista
         preco = float(p.get("preco_venda") or p.get("preco") or 0)
-        nome_exibido = (p.get("descricao_completa") or "").strip() or p["nome"]
+        # usa a descricao completa do HOS so quando ela e mais informativa que o nome
+        # (alguns cadastros vem com descricao curta, ex.: "C/12UN")
+        desc = (p.get("descricao_completa") or "").strip()
+        nome_exibido = desc if len(desc) > len(p["nome"]) else p["nome"]
         linhas.append(f"  - {nome_exibido} | R$ {preco:.2f} | lojas: {', '.join(p['lojas'])}")
     if len(achados) > limite:
         linhas.append(f"  (+ {len(achados) - limite} outros itens parecidos nao listados)")
