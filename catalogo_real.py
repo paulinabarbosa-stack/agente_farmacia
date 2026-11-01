@@ -274,6 +274,11 @@ def contexto_catalogo(texto_atual, textos_anteriores=None):
                 extra += [x for x in _tokens(t) if x not in extra and x not in atual]
             if extra:
                 segmentos = [atual + extra[:2]]
+        # palavras de FINALIDADE citadas pelo cliente ("adesivo PARA espinha", "pomada PRA assadura")
+        sem = _sem_acento(texto_atual)
+        finalidades = set()
+        for m in re.finditer(r"\b(?:para|pra|contra)\s+(?:a |o |as |os |uma |um )?([a-z]{4,})", sem):
+            finalidades.update(_tokens(m.group(1)))
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=len(segmentos)) as ex:
             resultados = list(ex.map(_procurar, segmentos))
@@ -284,6 +289,13 @@ def contexto_catalogo(texto_atual, textos_anteriores=None):
             pedido = " ".join(tk)
             if not achados:
                 partes.append(f"NAO ENCONTRADO NO ESTOQUE - cliente pediu: \"{pedido}\"")
+            elif soltou and any(t in finalidades for t in tk if t not in usados):
+                # o que faltou e a FINALIDADE pedida: os itens achados so combinam numa palavra
+                # solta e nao servem ao cliente -> tratar como nao encontrado (encomenda)
+                partes.append(
+                    f"NAO ENCONTRADO NO ESTOQUE - cliente pediu: \"{pedido}\" (nao ha produto "
+                    f"especifico para essa finalidade; NAO ofereca itens parecidos)"
+                )
             elif soltou:
                 faltou = " ".join(t for t in tk if t not in usados)
                 partes.append(
