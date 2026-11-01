@@ -64,6 +64,21 @@ def _ean_do_item(it):
     return None
 
 
+def _fabricante_das_caracteristicas(lista):
+    """O HOS guarda o laboratorio na lista Caracteristicas (Nome = FABRICANTE)."""
+    if not isinstance(lista, list):
+        return None
+    for c in lista:
+        if not isinstance(c, dict):
+            continue
+        nome = str(c.get("Nome") or c.get("nome") or "").strip().upper()
+        if nome == "FABRICANTE":
+            valor = _texto(c.get("Descricao") or c.get("descricao"))
+            if valor and valor.strip() not in ("0", "-"):
+                return valor.strip()
+    return None
+
+
 def _montar_registro(item):
     it = _minusculas(item)
     ean = _ean_do_item(it)
@@ -72,6 +87,8 @@ def _montar_registro(item):
     desc = _texto(it.get("descricao")) or ""
     apresentacao = _texto(it.get("apresentacao"))
     fabricante = _texto(it.get("fabricante") or it.get("laboratorio") or it.get("marca"))
+    if not fabricante:
+        fabricante = _fabricante_das_caracteristicas(it.get("caracteristicas"))
     partes = [desc] if desc else []
     base = desc.lower()
     for extra in (apresentacao, fabricante):
