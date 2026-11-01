@@ -1,26 +1,63 @@
 """
-sincronizar_produtos.py
-Traz da HOS (/produto/ativos) os dados que faltam no cadastro `produtos` do
-Supabase: descricao completa (com apresentacao e marca), fabricante e os
-precos (Preco = lista, Prc_Venda = venda). Roda em background no Railway:
-uma vez ~2 minutos depois de subir e depois a cada 6 horas.
+sincronizar_estoque.py
+Job de sincronizacao periodica do estoque da HOS pro Supabase (tabela
+estoque). Roda em background, no mesmo padrao dos outros jobs do backend
+(verificar_seguimentos, verificar_lembretes_recompra, verificar_reaberturas_agendadas).
 
-Grava via a funcao SQL `atualizar_produtos_hos` (ver SQL de instalacao).
-Nao mexe em nome, preco, categoria nem em nada que ja existe: so preenche
-as colunas novas. Se der erro, so registra no log e tenta de novo depois.
+Fluxo de cada ciclo:
+1. Busca o mapa de produtos (ean -> produto_id) e unidades (cnpj -> unidade_id)
+   no Supabase.
+2. Para cada codigo de empresa HOS configurado (ver hos_api.CHAVE_POR_CODIGO),
+   busca o /estoque e faz upsert na tabela estoque.
+
+FORMATO REAL DO /estoque (confirmado em producao, 28/07/2026): cada item
+retornado representa um PRODUTO, com uma lista aninhada "Estoques" contendo
+uma entrada por loja onde ele tem estoque. Exemplo real:
+
+    {
+      "Produto": "7896658002113",              # o proprio codigo de barras
+      "CodigoInterno": 9,
+      "ListaEans": [{"CodigoBarras": "7896658002113"}],
+      "Estoques": [{"CNPJ": "02165564000290", "Quantidade": 3}]
+    }
+
+IMPORTANTE - pre-requisito no banco: a tabela estoque precisa de uma
+constraint UNIQUE em (produto_id, unidade_id) pro upsert funcionar. Se
+ainda nao existir, rode uma vez no SQL Editor do Supabase:
+
+    ALTER TABLE estoque
+    ADD CONSTRAINT estoque_produto_unidade_unique UNIQUE (produto_id, unidade_id);
 """
+
 import os
+import re
 import time
 import requests
 
-from hos_api import _hos_request, CHAVE_POR_CODIGO
+from hos_api import get_estoque, CHAVE_POR_CODIGO
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
-ATRASO_INICIAL_SEGUNDOS = 120
-INTERVALO_SEGUNDOS = 6 * 60 * 60
-EAN_DE_CONFERENCIA = "7896523201078"  # Atorvastatina 40mg Cimed (conferencia no log)
+INTERVALO_SINCRONIZACAO_SEGUNDOS = 5 * 60  # 5 minutos (orientacao da HOS: 3 a 5 min)
+
+# Margem de seguranca ao gravar o "lastupdate": volta 2 min no relogio pra nao
+# perder alteracao que aconteceu durante a propria consulta. Reprocessar um
+# item duas vezes e inofensivo (o upsert so sobrescreve com o mesmo valor).
+MARGEM_LASTUPDATE_SEGUNDOS = 120
+
+# A cada quanto tempo faz uma carga COMPLETA (lastupdate=0) como rede de
+# seguranca, caso alguma alteracao incremental tenha escapado.
+INTERVALO_CARGA_COMPLETA_SEGUNDOS = 6 * 60 * 60  # 6 horas
+
+# Cache dos mapas ean->produto e cnpj->unidade (evita baixar 15 mil produtos
+# do Supabase a cada 5 minutos).
+VALIDADE_MAPAS_SEGUNDOS = 30 * 60  # 30 minutos
+
+# Estado em memoria. Se o Railway reiniciar, o primeiro ciclo faz carga completa.
+_ultimo_lastupdate = {}        # codigo -> timestamp unix da ultima consulta
+_ultima_carga_completa = {}    # codigo -> timestamp da ultima carga completa
+_cache_mapas = {"produtos": {}, "unidades": {}, "carregado_em": 0}
 
 
 def _headers_admin():
@@ -31,135 +68,308 @@ def _headers_admin():
     }
 
 
-def _minusculas(item):
-    return {str(k).lower(): v for k, v in item.items()}
+def _normalizar_cnpj(valor):
+    """Remove tudo que nao for digito, pra poder comparar o CNPJ retornado
+    pela HOS (so numeros) com o cadastrado em unidades.cnpj (que pode estar
+    formatado, tipo 02.165.564/0002-90)."""
+    if not valor:
+        return ""
+    return re.sub(r"\D", "", str(valor))
 
 
-def _num(valor):
-    try:
-        if valor is None or valor == "":
-            return None
-        return float(str(valor).replace(",", "."))
-    except Exception:
-        return None
-
-
-def _texto(valor):
-    if valor is None:
-        return None
-    t = str(valor).strip()
-    return t or None
-
-
-def _ean_do_item(it):
-    ean = _texto(it.get("codigobarras"))
-    if ean:
-        return ean
-    lista = it.get("codigosbarras")
-    if isinstance(lista, list) and lista:
-        primeiro = lista[0]
-        if isinstance(primeiro, dict):
-            return _texto(primeiro.get("codigobarras") or primeiro.get("CodigoBarras"))
-        return _texto(primeiro)
-    return None
-
-
-def _fabricante_das_caracteristicas(lista):
-    """O HOS guarda o laboratorio na lista Caracteristicas (Nome = FABRICANTE)."""
-    if not isinstance(lista, list):
-        return None
-    for c in lista:
-        if not isinstance(c, dict):
-            continue
-        nome = str(c.get("Nome") or c.get("nome") or "").strip().upper()
-        if nome == "FABRICANTE":
-            valor = _texto(c.get("Descricao") or c.get("descricao"))
-            if valor and valor.strip() not in ("0", "-"):
-                return valor.strip()
-    return None
-
-
-def _montar_registro(item):
-    it = _minusculas(item)
-    ean = _ean_do_item(it)
-    if not ean:
-        return None
-    desc = _texto(it.get("descricao")) or ""
-    apresentacao = _texto(it.get("apresentacao"))
-    fabricante = _texto(it.get("fabricante") or it.get("laboratorio") or it.get("marca"))
-    if not fabricante:
-        fabricante = _fabricante_das_caracteristicas(it.get("caracteristicas"))
-    partes = [desc] if desc else []
-    base = desc.lower()
-    for extra in (apresentacao, fabricante):
-        if extra and extra.lower() not in base:
-            partes.append(extra)
-            base += " " + extra.lower()
-    return {
-        "ean": ean,
-        "descricao_completa": " ".join(partes) or None,
-        "apresentacao": apresentacao,
-        "fabricante": fabricante,
-        "preco_lista": _num(it.get("preco")),
-        "preco_venda": _num(it.get("prc_venda")),
-        "hos_raw": item,
-    }
-
-
-def sincronizar_produtos_uma_vez():
+def buscar_todos_produtos():
+    """Busca todos os produtos do Supabase (ean -> id), paginando de 1000 em
+    1000 - o catalogo tem quase 15 mil itens e o Supabase limita por padrao
+    a 1000 registros por consulta (mesmo problema ja resolvido antes nos
+    dropdowns de Produtos Associados)."""
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-        print("[SINC PRODUTOS] SUPABASE_URL/SERVICE_ROLE_KEY nao configurados")
-        return
-    codigo = next((c for c in (139, 98, 97) if CHAVE_POR_CODIGO.get(c)), None)
-    if not codigo:
-        print("[SINC PRODUTOS] nenhuma chave HOS configurada")
-        return
+        print("[SINCRONIZAR ESTOQUE] SUPABASE_URL ou SUPABASE_SERVICE_ROLE_KEY nao configurados")
+        return {}
 
-    dados = _hos_request(codigo, "/produto/ativos?limit=30000&offset=0")
-    if isinstance(dados, dict):
-        for chave in ("itens", "items", "produtos", "data", "result"):
-            if isinstance(dados.get(chave), list):
-                dados = dados[chave]
-                break
-    if not isinstance(dados, list):
-        print("[SINC PRODUTOS] resposta inesperada da HOS:", str(dados)[:200])
-        return
-    print(f"[SINC PRODUTOS] {len(dados)} produtos ativos recebidos da HOS (codigo {codigo})")
-    if dados and isinstance(dados[0], dict):
-        print("[SINC PRODUTOS] campos de um item:", sorted(dados[0].keys()))
+    mapa_ean_para_id = {}
+    offset = 0
+    tamanho_pagina = 1000
 
-    registros = []
-    for item in dados:
-        if isinstance(item, dict):
-            reg = _montar_registro(item)
-            if reg:
-                registros.append(reg)
-                if reg["ean"] == EAN_DE_CONFERENCIA:
-                    print("[SINC PRODUTOS] CONFERENCIA Atorvastatina Cimed:",
-                          {k: v for k, v in reg.items() if k != "hos_raw"})
-
-    atualizados = 0
-    for i in range(0, len(registros), 500):
-        lote = registros[i:i + 500]
+    while True:
+        params = {
+            "select": "id,ean",
+            "ean": "not.is.null",
+            "limit": tamanho_pagina,
+            "offset": offset,
+        }
         try:
-            r = requests.post(
-                f"{SUPABASE_URL}/rest/v1/rpc/atualizar_produtos_hos",
-                headers=_headers_admin(), json={"p": lote}, timeout=120,
-            )
-            if r.ok:
-                atualizados += int(r.json() or 0)
-            else:
-                print(f"[SINC PRODUTOS] erro no lote {i}: {r.status_code} {r.text[:300]}")
+            r = requests.get(f"{SUPABASE_URL}/rest/v1/produtos", headers=_headers_admin(), params=params, timeout=30)
         except Exception as e:
-            print(f"[SINC PRODUTOS] erro de rede no lote {i}:", e)
-    print(f"[SINC PRODUTOS] concluido: {atualizados} produtos atualizados no Supabase")
+            print(f"[SINCRONIZAR ESTOQUE] Erro de rede ao buscar produtos (offset {offset}):", e)
+            break
+
+        if not r.ok:
+            print(f"[SINCRONIZAR ESTOQUE] Erro ao buscar produtos (offset {offset}): {r.status_code} {r.text[:300]}")
+            break
+
+        pagina = r.json()
+        if not isinstance(pagina, list) or not pagina:
+            break
+
+        for p in pagina:
+            ean = p.get("ean")
+            if ean:
+                mapa_ean_para_id[str(ean)] = p["id"]
+
+        if len(pagina) < tamanho_pagina:
+            break
+        offset += tamanho_pagina
+
+    print(f"[SINCRONIZAR ESTOQUE] {len(mapa_ean_para_id)} produtos carregados (com ean) para o mapa de sincronizacao")
+    return mapa_ean_para_id
 
 
-def verificar_sincronizacao_produtos():
-    time.sleep(ATRASO_INICIAL_SEGUNDOS)
+def buscar_todas_unidades():
+    """Busca todas as unidades do Supabase (cnpj normalizado -> id)."""
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        return {}
+    try:
+        params = {"select": "id,cnpj,nome"}
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/unidades", headers=_headers_admin(), params=params, timeout=30)
+        if not r.ok:
+            print(f"[SINCRONIZAR ESTOQUE] Erro ao buscar unidades: {r.status_code} {r.text[:300]}")
+            return {}
+        dados = r.json()
+        mapa = {}
+        for u in dados:
+            cnpj_norm = _normalizar_cnpj(u.get("cnpj"))
+            if cnpj_norm:
+                mapa[cnpj_norm] = u["id"]
+        print(f"[SINCRONIZAR ESTOQUE] {len(mapa)} unidades carregadas para o mapa de sincronizacao")
+        return mapa
+    except Exception as e:
+        print("[SINCRONIZAR ESTOQUE] Erro ao buscar unidades:", e)
+        return {}
+
+
+def _extrair_codigo_barras(item):
+    """O campo 'Produto' retornado pela HOS ja e o proprio codigo de
+    barras (confirmado em producao). 'ListaEans' serve de fallback caso
+    'Produto' venha vazio em algum registro."""
+    if item.get("Produto"):
+        return str(item["Produto"])
+    lista_eans = item.get("ListaEans")
+    if isinstance(lista_eans, list) and lista_eans:
+        primeiro = lista_eans[0]
+        if isinstance(primeiro, dict) and primeiro.get("CodigoBarras"):
+            return str(primeiro["CodigoBarras"])
+    return None
+
+
+def _extrair_quantidade(estoque_item):
+    for chave in ("Quantidade", "quantidade", "Qtd", "qtd"):
+        if estoque_item.get(chave) is not None:
+            try:
+                return float(estoque_item[chave])
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _upsert_estoque(produto_id, unidade_id, quantidade):
+    """Insere ou atualiza uma linha na tabela estoque, usando produto_id +
+    unidade_id como chave de conflito. Requer a constraint UNIQUE citada no
+    topo do arquivo.
+
+    A coluna estoque.quantidade e do tipo integer no Supabase - por isso
+    convertemos aqui antes de enviar (a HOS pode mandar a quantidade como
+    float, tipo 3.0)."""
+    try:
+        quantidade_int = int(round(quantidade))
+
+        headers = _headers_admin()
+        headers["Prefer"] = "resolution=merge-duplicates"
+        body = {
+            "produto_id": produto_id,
+            "unidade_id": unidade_id,
+            "quantidade": quantidade_int,
+        }
+        params = {"on_conflict": "produto_id,unidade_id"}
+        r = requests.post(
+            f"{SUPABASE_URL}/rest/v1/estoque", json=body, headers=headers, params=params, timeout=15
+        )
+        if not r.ok:
+            print(
+                f"[SINCRONIZAR ESTOQUE] Erro no upsert (produto_id={produto_id}, "
+                f"unidade_id={unidade_id}): {r.status_code} {r.text[:300]}"
+            )
+    except Exception as e:
+        print("[SINCRONIZAR ESTOQUE] Erro ao fazer upsert de estoque:", e)
+
+
+LIMITE_ESTOQUE_POR_CHAMADA = 100000   # limit alto, como a HOS orientou
+LIMITE_PAGINAS_ESTOQUE = 50           # trava de seguranca contra loop infinito
+PAUSA_ENTRE_PAGINAS_SEGUNDOS = 1      # evita bloqueio do Cloudflare
+
+
+def _buscar_estoque_paginado(codigo, lastupdate):
+    """Busca o /estoque. Na HOS o parametro "offset" e o NUMERO DA PAGINA
+    (pagina N comeca no item N x limit), e nao um deslocamento de linhas.
+    Com limit=100000 tudo vem na primeira chamada; so se vier uma pagina
+    cheia (100000 itens) buscamos a proxima (offset=1, 2, ...)."""
+    primeira = get_estoque(codigo, limit=LIMITE_ESTOQUE_POR_CHAMADA, lastupdate=lastupdate)
+    if not isinstance(primeira, list):
+        return primeira
+
+    todos = list(primeira)
+    if len(primeira) < LIMITE_ESTOQUE_POR_CHAMADA:
+        return todos
+
+    for pagina_numero in range(1, LIMITE_PAGINAS_ESTOQUE):
+        time.sleep(PAUSA_ENTRE_PAGINAS_SEGUNDOS)
+        pagina = get_estoque(
+            codigo, limit=LIMITE_ESTOQUE_POR_CHAMADA, offset=pagina_numero, lastupdate=lastupdate
+        )
+        if not isinstance(pagina, list) or not pagina:
+            break
+        todos.extend(pagina)
+        if len(pagina) < LIMITE_ESTOQUE_POR_CHAMADA:
+            break
+
+    print(f"[SINCRONIZAR ESTOQUE] Codigo {codigo}: paginacao concluida com {len(todos)} produto(s)")
+    return todos
+
+
+def _obter_mapas():
+    """Retorna (mapa_produtos, mapa_unidades), recarregando do Supabase so
+    quando o cache venceu."""
+    agora = time.time()
+    if (
+        _cache_mapas["produtos"]
+        and _cache_mapas["unidades"]
+        and (agora - _cache_mapas["carregado_em"]) < VALIDADE_MAPAS_SEGUNDOS
+    ):
+        return _cache_mapas["produtos"], _cache_mapas["unidades"]
+
+    mapa_produtos = buscar_todos_produtos()
+    mapa_unidades = buscar_todas_unidades()
+    if mapa_produtos and mapa_unidades:
+        _cache_mapas["produtos"] = mapa_produtos
+        _cache_mapas["unidades"] = mapa_unidades
+        _cache_mapas["carregado_em"] = agora
+    return mapa_produtos, mapa_unidades
+
+
+def sincronizar_uma_vez():
+    """Roda um ciclo de sincronizacao. Para cada codigo de empresa:
+    - primeira vez (ou a cada 6h): carga COMPLETA (lastupdate=0);
+    - demais ciclos: INCREMENTAL, so o que mudou desde a ultima consulta.
+
+    Cada item do /estoque representa UM PRODUTO, com uma lista aninhada
+    "Estoques" contendo uma entrada por loja onde ele tem estoque."""
+    mapa_produtos, mapa_unidades = _obter_mapas()
+
+    if not mapa_produtos or not mapa_unidades:
+        print("[SINCRONIZAR ESTOQUE] Mapa de produtos ou unidades vazio - abortando ciclo")
+        return
+
+    for codigo, chave in CHAVE_POR_CODIGO.items():
+        if not chave:
+            print(f"[SINCRONIZAR ESTOQUE] Codigo {codigo} sem chave configurada - pulando")
+            continue
+
+        agora = time.time()
+        precisa_completa = (
+            codigo not in _ultimo_lastupdate
+            or (agora - _ultima_carga_completa.get(codigo, 0)) >= INTERVALO_CARGA_COMPLETA_SEGUNDOS
+        )
+        lastupdate = 0 if precisa_completa else _ultimo_lastupdate[codigo]
+        modo = "COMPLETA" if precisa_completa else f"incremental (lastupdate={lastupdate})"
+
+        # Guarda o instante ANTES da consulta (menos a margem), pra nao perder
+        # nada que mude enquanto a chamada esta em andamento.
+        marca_desta_consulta = int(agora) - MARGEM_LASTUPDATE_SEGUNDOS
+
+        try:
+            itens = _buscar_estoque_paginado(codigo, lastupdate)
+        except Exception as e:
+            print(f"[SINCRONIZAR ESTOQUE] Erro ao buscar /estoque do codigo {codigo}:", e)
+            continue
+
+        if not isinstance(itens, list):
+            print(f"[SINCRONIZAR ESTOQUE] Resposta inesperada do /estoque (codigo {codigo}): {str(itens)[:300]}")
+            continue
+
+        print(f"[SINCRONIZAR ESTOQUE] Codigo {codigo} [{modo}]: {len(itens)} produto(s) recebido(s)")
+
+        atualizados = 0
+        pulados_produto = 0
+        pulados_unidade = 0
+        pulados_quantidade = 0
+        pulados_sem_estoques = 0
+        exemplos_sem_correspondencia = []
+
+        for item in itens:
+            codigo_barras = _extrair_codigo_barras(item)
+            produto_id = mapa_produtos.get(codigo_barras) if codigo_barras else None
+
+            if not produto_id:
+                pulados_produto += 1
+                if len(exemplos_sem_correspondencia) < 5:
+                    exemplos_sem_correspondencia.append(codigo_barras)
+                continue
+
+            lista_estoques = item.get("Estoques")
+            if not isinstance(lista_estoques, list) or not lista_estoques:
+                pulados_sem_estoques += 1
+                continue
+
+            for estoque_item in lista_estoques:
+                if not isinstance(estoque_item, dict):
+                    continue
+
+                cnpj = _normalizar_cnpj(estoque_item.get("CNPJ") or estoque_item.get("Cnpj"))
+                quantidade = _extrair_quantidade(estoque_item)
+                unidade_id = mapa_unidades.get(cnpj) if cnpj else None
+
+                if not unidade_id:
+                    pulados_unidade += 1
+                    continue
+                if quantidade is None:
+                    pulados_quantidade += 1
+                    continue
+
+                _upsert_estoque(produto_id, unidade_id, quantidade)
+                atualizados += 1
+
+        print(
+            f"[SINCRONIZAR ESTOQUE] Codigo {codigo} concluido: {atualizados} linha(s) de estoque atualizada(s), "
+            f"{pulados_produto} produto(s) sem correspondencia no Supabase, "
+            f"{pulados_sem_estoques} produto(s) sem lista de Estoques, "
+            f"{pulados_unidade} entrada(s) sem unidade correspondente, "
+            f"{pulados_quantidade} entrada(s) sem quantidade valida"
+        )
+        if exemplos_sem_correspondencia:
+            print(f"[SINCRONIZAR ESTOQUE] Exemplos sem correspondencia (ate 5): {exemplos_sem_correspondencia}")
+
+        # So avanca o lastupdate depois de processar com sucesso.
+        _ultimo_lastupdate[codigo] = marca_desta_consulta
+        if precisa_completa:
+            _ultima_carga_completa[codigo] = agora
+
+
+def verificar_sincronizacao_estoque():
+    """Loop em background - roda a sincronizacao a cada
+    INTERVALO_SINCRONIZACAO_SEGUNDOS. Mesmo padrao dos outros verificadores
+    do backend (verificar_seguimentos, verificar_lembretes_recompra etc)."""
     while True:
         try:
-            sincronizar_produtos_uma_vez()
+            print("[SINCRONIZAR ESTOQUE] Iniciando ciclo de sincronizacao...")
+            sincronizar_uma_vez()
         except Exception as e:
-            print("[SINC PRODUTOS] erro no ciclo:", e)
-        time.sleep(INTERVALO_SEGUNDOS)
+            print("[SINCRONIZAR ESTOQUE] Erro no ciclo de sincronizacao:", e)
+
+        # Aproveita o mesmo ciclo pra gerar um lote de sugestoes de produtos
+        # complementares (so roda se SUGESTOES_ATIVAS=true no Railway).
+        try:
+            from sugestoes_associados import gerar_lote_de_sugestoes
+            gerar_lote_de_sugestoes()
+        except Exception as e:
+            print("[SUGESTOES] Erro ao gerar sugestoes:", e)
+
+        time.sleep(INTERVALO_SINCRONIZACAO_SEGUNDOS)
