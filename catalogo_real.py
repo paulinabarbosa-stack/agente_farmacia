@@ -209,15 +209,37 @@ def _segmentos(texto):
     return saida[:4]
 
 
+def _nome_para_exibir(p):
+    """Junta o nome (que o HOS corta em 25 letras, ex.: 'ATORVASTATINA CALCICA 40M')
+    com a descricao (ex.: '40MG C/30CPR REV CIMED') sem repetir pedacos."""
+    nome = (p.get("nome") or "").strip()
+    desc = (p.get("descricao_completa") or "").strip()
+    if not desc:
+        return nome
+    nl, dl = nome.lower(), desc.lower()
+    if dl in nl:
+        return nome
+    if nl in dl:
+        return desc
+    palavras = nome.split()
+    dw = dl.split()
+    pn = {w for w in nl.split() if w.isalnum() or len(w) > 1}
+    if pn and pn <= set(dw):
+        return desc
+    if palavras and dw:
+        ultima = palavras[-1].lower()
+        # ultimo pedaco do nome e so o comeco (cortado) da 1a palavra da descricao
+        if len(ultima) >= 2 and dw[0].startswith(ultima):
+            return " ".join(palavras[:-1] + [desc]).strip()
+    return nome
+
+
 def _linhas(achados, limite):
     linhas = []
     for p in achados[:limite]:
         # preco_venda = menor preco praticado (promocao/desconto); cai para o preco de lista
         preco = float(p.get("preco_venda") or p.get("preco") or 0)
-        # usa a descricao completa do HOS so quando ela e mais informativa que o nome
-        # (alguns cadastros vem com descricao curta, ex.: "C/12UN")
-        desc = (p.get("descricao_completa") or "").strip()
-        nome_exibido = desc if len(desc) > len(p["nome"]) else p["nome"]
+        nome_exibido = _nome_para_exibir(p)
         linhas.append(f"  - {nome_exibido} | R$ {preco:.2f} | lojas: {', '.join(p['lojas'])}")
     if len(achados) > limite:
         linhas.append(f"  (+ {len(achados) - limite} outros itens parecidos nao listados)")
