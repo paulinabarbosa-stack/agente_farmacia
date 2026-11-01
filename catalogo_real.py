@@ -84,6 +84,10 @@ SINONIMOS = {
     "colirio": ["colirio", "col"],
     "efervescente": ["efervescente", "efev", "efer"],
     "injetavel": ["injetavel", "inj"],
+    "espinha": ["espinha", "acne"],
+    "espinhas": ["espinha", "acne"],
+    "acne": ["espinha", "acne"],
+    "acnes": ["espinha", "acne"],
 }
 
 
@@ -164,6 +168,20 @@ def _procurar(tokens):
     tokens = _corrigir(tokens)[:4]
     if not tokens:
         return [], [], False
+    # Se o pedido tem 2+ palavras e a busca com todas nao acha nada, uma palavra rara
+    # sozinha (ex.: 'espinha' em 'adesivo para espinha') pode achar o produto certo,
+    # enquanto a palavra comum ('adesivo') traria itens sem relacao.
+    if len(tokens) >= 2 and not _com_estoque(_buscar_produtos(tokens)):
+        melhor = None
+        for t in tokens:
+            if re.fullmatch(r"\d+(mg|g|ml|mcg|ui)", t):
+                continue
+            achados_t = _com_estoque(_buscar_produtos([t]))
+            if achados_t and len(achados_t) <= 6:
+                if melhor is None or len(achados_t) < len(melhor[0]):
+                    melhor = (achados_t, [t])
+        if melhor:
+            return melhor[0], melhor[1], True
     for ini in range(min(2, len(tokens))):
         resto = tokens[ini:]
         for k in range(len(resto), 0, -1):
