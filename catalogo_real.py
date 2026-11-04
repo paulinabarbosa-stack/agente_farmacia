@@ -283,9 +283,17 @@ def _equivalentes_da_marca(tk):
     marcas = _marcas()
     if not marcas:
         return None
+    import difflib
     for t in tk:
-        if t in marcas:
-            principio, controlado = marcas[t]
+        chave = t if t in marcas else None
+        if not chave and len(t) >= 5 and not re.search(r"\d", t):
+            # erro de digitacao: 'vurtuiso' ~ 'vurtuoso'
+            parecidas = difflib.get_close_matches(t, list(marcas.keys()), n=1, cutoff=0.8)
+            if parecidas:
+                chave = parecidas[0]
+        if chave:
+            principio, controlado = marcas[chave]
+            t = chave
             doses = [x for x in tk if re.fullmatch(r"\d+(mg|g|ml|mcg|ui)", x)]
             achados = _com_estoque(_buscar_produtos([principio] + doses)) if doses else []
             if not achados:
