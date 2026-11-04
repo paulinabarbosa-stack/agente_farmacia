@@ -365,11 +365,88 @@ REGRAS = (
 )
 
 
+def _eh_laboratorio(token):
+    """True se alguma linha do catalogo tem esse laboratorio (fabricante)."""
+    if len(token) < 3:
+        return False
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/produtos",
+            headers=_headers(),
+            params={"fabricante": f"ilike.*{_padrao(token)}*", "select": "id", "limit": 1},
+            timeout=10,
+        )
+        return bool(r.ok and r.json())
+    except Exception:
+        return False
+
+
+def _marca_conhecida(token):
+    """Devolve (principio_ativo, controlado) se o token e uma marca da tabela (aceita erro de digitacao)."""
+    import difflib
+    marcas = _marcas()
+    if token in marcas:
+        return marcas[token]
+    if len(token) >= 5 and not re.search(r"\d", token):
+        p = difflib.get_close_matches(token, list(marcas.keys()), n=1, cutoff=0.8)
+        if p:
+            return marcas[p[0]]
+    return None
+
+
+PALAVRAS_DE_LABORATORIO = {"marca", "laboratorio", "fabricante", "lab", "marcas"}
+
+
+def _so_laboratorio(texto_atual, textos_anteriores, limite):
+    """Se a mensagem e SO um laboratorio (ex.: 'da marca althaia?'), responde usando o
+    remedio da conversa anterior. Devolve o texto do bloco ou None."""
+    tk = [t for t in _tokens(texto_atual) if t not in PALAVRAS_DE_LABORATORIO]
+    if not tk or len(tk) > 2:
+        return None
+    labs = [t for t in tk if _eh_laboratorio(t)]
+    if len(labs) != len(tk):
+        return None
+    lab = labs[0]
+    anterior = []
+    for t in reversed((textos_anteriores or [])[-3:]):
+        cand = [x for x in _tokens(t) if x not in PALAVRAS_DE_LABORATORIO and x != lab and not _eh_laboratorio(x)]
+        if cand:
+            anterior = cand
+            break
+    if not anterior:
+        return (
+            f"LABORATORIO SEM REMEDIO - o cliente perguntou so pelo laboratorio \"{lab}\" sem dizer qual remedio. "
+            f"NAO liste produtos desse laboratorio: pergunte qual remedio ou principio ativo ele procura."
+        )
+    produto = []
+    for x in anterior[:3]:
+        info = _marca_conhecida(x)
+        produto.append(info[0] if info else x)
+    achados = _com_estoque(_buscar_produtos(produto + [lab]))
+    pedido = " ".join(produto)
+    if achados:
+        return (
+            f"ENCONTRADO - cliente pediu: \"{pedido}\" do laboratorio {lab} -> {len(achados)} item(ns) com estoque:\n"
+            + "\n".join(_linhas(achados, limite))
+        )
+    return (
+        f"NAO ENCONTRADO NO ESTOQUE - cliente pediu \"{pedido}\" do laboratorio {lab}: esse laboratorio NAO tem "
+        f"esse produto em estoque. Diga isso com clareza e NAO liste outros produtos do laboratorio."
+    )
+
+
 def contexto_catalogo(texto_atual, textos_anteriores=None):
     """Devolve um bloco de texto com produtos reais em estoque, ou ''."""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return ""
     try:
+        so_lab = _so_laboratorio(texto_atual, textos_anteriores, MAX_PRODUTOS)
+        if so_lab:
+            print("[CATALOGO] mensagem so de laboratorio")
+            return (
+                "\n\nCATALOGO REAL DA FARMACIA (consultado agora no estoque; use ISTO para esta mensagem "
+                "do cliente, tem prioridade sobre a tabela fixa de precos):\n" + so_lab + "\n" + REGRAS
+            )
         segmentos = _segmentos(texto_atual)
         if not segmentos:
             return ""
