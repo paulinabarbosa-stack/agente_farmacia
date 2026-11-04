@@ -236,9 +236,62 @@ def _nome_para_exibir(p):
     if palavras and dw:
         ultima = palavras[-1].lower()
         # ultimo pedaco do nome e so o comeco (cortado) da 1a palavra da descricao
-        if len(ultima) >= 2 and dw[0].startswith(ultima):
-            return " ".join(palavras[:-1] + [desc]).strip()
+        if len(ultima) >= 2:
+            dwords = desc.split()
+            for i, w in enumerate(dwords):
+                if w.lower().startswith(ultima):
+                    antes = dwords[:i]
+                    marca = f"({' '.join(antes)})" if antes else ""
+                    return " ".join(palavras[:-1] + ([marca] if marca else []) + dwords[i:]).strip()
     return nome
+
+
+_MARCAS_CACHE = {"quando": 0.0, "dados": {}}
+
+
+def _marcas():
+    """marca (minuscula, sem acento) -> (principio_ativo, controlado). Cache de 10 min."""
+    import time
+    agora = time.time()
+    if agora - _MARCAS_CACHE["quando"] < 600 and _MARCAS_CACHE["quando"]:
+        return _MARCAS_CACHE["dados"]
+    dados = {}
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/marcas_equivalentes",
+            headers=_headers(),
+            params={"select": "marca,principio_ativo,controlado", "limit": 2000},
+            timeout=10,
+        )
+        if r.ok:
+            for m in r.json():
+                dados[_sem_acento(m["marca"]).strip()] = (
+                    _sem_acento(m["principio_ativo"]).strip(), bool(m.get("controlado"))
+                )
+        else:
+            print(f"[CATALOGO] marcas_equivalentes: {r.status_code} {r.text[:120]}")
+    except Exception as e:
+        print("[CATALOGO] erro marcas:", e)
+    _MARCAS_CACHE["quando"] = agora
+    _MARCAS_CACHE["dados"] = dados
+    return dados
+
+
+def _equivalentes_da_marca(tk):
+    """Se o cliente pediu uma MARCA conhecida (ex.: vurtuoso), procura itens do mesmo
+    principio ativo. Devolve (marca, principio, controlado, achados) ou None."""
+    marcas = _marcas()
+    if not marcas:
+        return None
+    for t in tk:
+        if t in marcas:
+            principio, controlado = marcas[t]
+            doses = [x for x in tk if re.fullmatch(r"\d+(mg|g|ml|mcg|ui)", x)]
+            achados = _com_estoque(_buscar_produtos([principio] + doses)) if doses else []
+            if not achados:
+                achados = _com_estoque(_buscar_produtos([principio]))
+            return t, principio, controlado, achados
+    return None
 
 
 def _linhas(achados, limite):
@@ -324,7 +377,28 @@ def contexto_catalogo(texto_atual, textos_anteriores=None):
         for tk, (achados, usados, soltou) in zip(segmentos, resultados):
             tk = _corrigir(tk)[:4]
             pedido = " ".join(tk)
-            if not achados:
+            marca_info = None
+            if not achados or (soltou and tk and tk[0] not in usados):
+                marca_info = _equivalentes_da_marca(tk)
+            if marca_info:
+                marca, principio, controlado, equivalentes = marca_info
+                if equivalentes:
+                    acao = (
+                        "e um medicamento CONTROLADO: NAO feche a venda nem troque por conta propria; "
+                        "se o cliente quiser, responda TRANSFERIR_FARMACEUTICO para o farmaceutico confirmar"
+                        if controlado else
+                        "pergunte se o cliente quer uma destas opcoes"
+                    )
+                    partes.append(
+                        f"MARCA NAO DISPONIVEL - cliente pediu a marca \"{marca}\" (principio ativo: {principio}). "
+                        f"Essa MARCA nao esta no estoque. Abaixo ha itens com o MESMO principio ativo, de outra "
+                        f"marca e/ou dose (NAO sao a marca pedida; confira a dose que ele pediu): diga claramente "
+                        f"que a marca pedida nao tem, cite estes itens como possibilidade e {acao}:\n"
+                        + "\n".join(_linhas(equivalentes, limite))
+                    )
+                else:
+                    partes.append(f"NAO ENCONTRADO NO ESTOQUE - cliente pediu: \"{pedido}\"")
+            elif not achados:
                 partes.append(f"NAO ENCONTRADO NO ESTOQUE - cliente pediu: \"{pedido}\"")
             elif soltou and any(t in finalidades for t in tk if t not in usados):
                 # o que faltou e a FINALIDADE pedida: os itens achados so combinam numa palavra
