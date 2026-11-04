@@ -243,6 +243,12 @@ def _nome_para_exibir(p):
                     antes = dwords[:i]
                     marca = f"({' '.join(antes)})" if antes else ""
                     return " ".join(palavras[:-1] + ([marca] if marca else []) + dwords[i:]).strip()
+    # nome e descricao se completam (ex.: 'ETODOLACO' + '500MG C/14 REV ALTHAIA'):
+    # junta o nome com o que a descricao tem de novo
+    ja = {w.lower() for w in palavras}
+    resto = [w for w in desc.split() if w.lower() not in ja]
+    if resto:
+        return (nome + " " + " ".join(resto)).strip()
     return nome
 
 
@@ -350,6 +356,9 @@ REGRAS = (
     "(14) COPIE o nome de cada produto EXATAMENTE como esta na linha do catalogo, do comeco ao fim, incluindo "
     "o LABORATORIO/MARCA que fica no final (ex.: '... C/30CPR REV CIMED'). Nao encurte, nao corte palavras, "
     "nao troque acentos nem reescreva o nome. "
+    "(15) Se o cliente perguntou so por um LABORATORIO ou MARCA (ex.: 'do laboratorio X tem?') sem dizer qual "
+    "remedio, e a lista mistura produtos diferentes, NAO despeje a lista: pergunte qual remedio ou principio "
+    "ativo ele procura desse laboratorio. Se ele ja falou de um remedio antes na conversa, confira so esse. "
     "(8) NUNCA diga 'so um instante', 'ja volto', 'vou buscar o preco' ou 'vou verificar e retorno': voce "
     "nao consegue voltar depois. Responda tudo o que sabe AGORA, na mesma mensagem, e peca so o que "
     "realmente falta ao cliente."
