@@ -518,11 +518,14 @@ def e_mensagem_de_despedida(texto):
 
 
 PALAVRAS_DESCONTO = [
-    "desconto", "descontinho", "mais barato", "baixar o preco", "abaixar o preco",
+    "desconto", "descontinho", "baixar o preco", "abaixar o preco",
     "reduzir o preco", "reduzir o valor", "fazer um precinho", "consegue abaixar",
     "tem como abaixar", "tem como diminuir", "diminuir o preco", "da pra baixar",
-    "da pra fazer mais barato", "por menos",
+    "da pra fazer mais barato", "fazer mais barato", "deixar mais barato",
+    "ficar mais barato", "consegue mais barato", "por menos",
 ]
+# "mais barato" sozinho NAO e pedido de desconto: o cliente pode so estar escolhendo
+# o item de menor preco ("pode ser o mais barato dos 3", "tem algo mais barato?").
 
 VERBOS_NEGOCIACAO_PRECO = [
     "pode fazer", "consegue fazer", "da pra fazer", "tem como fazer",
