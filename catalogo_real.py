@@ -32,7 +32,7 @@ PALAVRAS_IGNORADAS = {
     "unidades", "comprimido", "comprimidos", "capsula", "capsulas", "ainda", "tambem",
     "quais", "qual", "como", "esta", "estao", "vai", "vou", "muito", "tudo", "certo",
     "claro", "ok", "blz", "beleza", "obg", "vlw", "valeu", "agora", "hoje", "amanha",
-    "preciso", "gostei", "tamanho", "tamanhos", "medicamentos", "produto", "produtos", "itens", "item", "dois", "tres", "quatro", "cinco", "pedir", "pedido", "somente", "apenas", "teria", "seria", "queria", "quer", "ser", "tinha", "existe", "haveria", "entao", "mesmo", "so", "porem", "mas", "tambem", "talvez", "acho", "pois", "devia", "deveria", "laboratorio", "lab", "marca", "generico", "similar", "referencia", "opcao", "opcoes", "outras", "gostaria", "alguma", "algum", "aquele", "aquela", "mesmo", "mesma", "pegar", "levar", "leva", "manda", "mandar", "envia", "enviar",
+    "preciso", "gostei", "tamanho", "tamanhos", "medicamentos", "produto", "produtos", "itens", "item", "dois", "tres", "quatro", "cinco", "pedir", "pedido", "somente", "apenas", "teria", "seria", "queria", "quer", "ser", "tinha", "coisas", "coisa", "cois", "negocio", "negocios", "trem", "bagulho", "existe", "haveria", "entao", "mesmo", "so", "porem", "mas", "tambem", "talvez", "acho", "pois", "devia", "deveria", "laboratorio", "lab", "marca", "generico", "similar", "referencia", "opcao", "opcoes", "outras", "gostaria", "alguma", "algum", "aquele", "aquela", "mesmo", "mesma", "pegar", "levar", "leva", "manda", "mandar", "envia", "enviar",
 }
 
 
@@ -455,14 +455,21 @@ def contexto_catalogo(texto_atual, textos_anteriores=None):
         segmentos = _segmentos(texto_atual)
         if not segmentos:
             return ""
-        # mensagem curta (ex.: "40mg", "o da cimed"): junta com o que veio antes
-        if len(segmentos) == 1 and textos_anteriores and len(segmentos[0]) <= 3:
+        # mensagem so com dose (ex.: "40mg", "o de 10mg"): junta com o remedio da mensagem anterior.
+        # Se a mensagem ja tem o NOME de um remedio, NAO junta nada (evita misturar pedidos).
+        def _so_doses(lista):
+            return bool(lista) and all(re.fullmatch(r"\d+(mg|g|ml|mcg|ui)", t) for t in lista)
+
+        if len(segmentos) == 1 and textos_anteriores and _so_doses(segmentos[0]):
             atual = segmentos[0]
             extra = []
             for t in reversed(textos_anteriores[-3:]):
-                extra += [x for x in _tokens(t) if x not in extra and x not in atual]
+                cand = [x for x in _tokens(t) if x not in atual and not re.fullmatch(r"\d+(mg|g|ml|mcg|ui)", x)]
+                if cand:
+                    extra = cand[:2]
+                    break
             if extra:
-                segmentos = [atual + extra[:2]]
+                segmentos = [extra + atual]
         # palavras de FINALIDADE citadas pelo cliente ("adesivo PARA espinha", "pomada PRA assadura")
         sem = _sem_acento(texto_atual)
         finalidades = set()
