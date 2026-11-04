@@ -478,16 +478,18 @@ def contexto_catalogo(texto_atual, textos_anteriores=None):
                 marca, principio, controlado, equivalentes = marca_info
                 if equivalentes:
                     acao = (
-                        "e um medicamento CONTROLADO: NAO feche a venda nem troque por conta propria; "
+                        "este medicamento (CONTROLADO/com receita): NAO feche a venda nem troque por conta propria; "
                         "se o cliente quiser, responda TRANSFERIR_FARMACEUTICO para o farmaceutico confirmar"
                         if controlado else
-                        "pergunte se o cliente quer uma destas opcoes"
+                        "este medicamento: pergunte se o cliente quer uma destas opcoes"
                     )
                     partes.append(
-                        f"MARCA NAO DISPONIVEL - cliente pediu a marca \"{marca}\" (principio ativo: {principio}). "
-                        f"Essa MARCA nao esta no estoque. Abaixo ha itens com o MESMO principio ativo, de outra "
-                        f"marca e/ou dose (NAO sao a marca pedida; confira a dose que ele pediu): diga claramente "
-                        f"que a marca pedida nao tem, cite estes itens como possibilidade e {acao}:\n"
+                        f"MESMO PRINCIPIO ATIVO - o cliente pediu a marca \"{marca}\", cujo principio ativo e "
+                        f"{principio}. A farmacia TEM {principio} (itens abaixo), de outra marca e/ou dose. "
+                        f"Comece a resposta dizendo que temos {principio} (o mesmo principio ativo de {marca}) e "
+                        f"cite os itens; so depois avise, sem alarde, que a marca {marca} em si nao esta no estoque. "
+                        f"Confira a dose pedida e diga se ela e diferente. Nunca diga que e 'igual' ou 'equivalente': "
+                        f"diga 'mesmo principio ativo'. Para {acao}:\n"
                         + "\n".join(_linhas(equivalentes, limite))
                     )
                 else:
