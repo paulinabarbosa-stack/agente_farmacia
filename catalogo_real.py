@@ -187,9 +187,16 @@ def _procurar(tokens):
                     melhor = (achados_t, [t])
         if melhor:
             return melhor[0], melhor[1], True
+    def so_dose(lista):
+        # so dosagens (15mg, 500mg...) = nao e nome de produto
+        return all(re.fullmatch(r"\d+(mg|g|ml|mcg|ui)", t) for t in lista)
+
     for ini in range(min(2, len(tokens))):
         resto = tokens[ini:]
         for k in range(len(resto), 0, -1):
+            # nunca procurar so pela dose: traria remedios sem relacao com o pedido
+            if so_dose(resto[:k]):
+                continue
             achados = _com_estoque(_buscar_produtos(resto[:k]))
             if achados:
                 return achados, resto[:k], k < len(resto)
