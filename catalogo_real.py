@@ -305,6 +305,11 @@ def _equivalentes_da_marca(tk):
             if not achados:
                 achados = _com_estoque(_buscar_produtos([principio]))
             return t, principio, controlado, achados
+    # cliente falou o nome GENERICO de um controlado (ex.: 'clonazepam')
+    ativos_controlados = {p for (p, c) in marcas.values() if c}
+    for t in tk:
+        if t in ativos_controlados:
+            return t, t, True, []
     return None
 
 
@@ -491,6 +496,13 @@ def contexto_catalogo(texto_atual, textos_anteriores=None):
                         f"Confira a dose pedida e diga se ela e diferente. Nunca diga que e 'igual' ou 'equivalente': "
                         f"diga 'mesmo principio ativo'. Para {acao}:\n"
                         + "\n".join(_linhas(equivalentes, limite))
+                    )
+                elif controlado:
+                    partes.append(
+                        f"CONTROLADO SEM CONSULTA - o cliente pediu {marca} ({principio}), medicamento CONTROLADO. "
+                        f"O catalogo automatico NAO consegue confirmar estoque de controlados. NAO diga que nao temos e "
+                        f"NAO diga que temos. Explique que medicamentos controlados sao confirmados pelo farmaceutico, "
+                        f"e responda TRANSFERIR_FARMACEUTICO para ele verificar a disponibilidade e a receita."
                     )
                 else:
                     partes.append(f"NAO ENCONTRADO NO ESTOQUE - cliente pediu: \"{pedido}\"")
