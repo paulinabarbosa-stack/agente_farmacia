@@ -63,6 +63,10 @@ def _tokens(texto):
     return saida
 
 
+class CatalogoIndisponivel(Exception):
+    """Banco/estoque fora do ar: NAO pode virar 'produto nao encontrado'."""
+
+
 def _headers():
     return {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
 
@@ -117,7 +121,7 @@ def _buscar_produtos(tokens):
     )
     if not r.ok:
         print(f"[CATALOGO] erro produtos: {r.status_code} {r.text[:150]}")
-        return []
+        raise CatalogoIndisponivel(f"produtos {r.status_code}")
     return r.json()
 
 
@@ -142,7 +146,7 @@ def _com_estoque(produtos):
         )
         if not r.ok:
             print(f"[CATALOGO] erro estoque: {r.status_code} {r.text[:150]}")
-            continue
+            raise CatalogoIndisponivel(f"estoque {r.status_code}")
         for e in r.json():
             nome_loja = (e.get("unidades") or {}).get("nome") or "loja"
             lojas.setdefault(e["produto_id"], []).append(nome_loja)
@@ -262,6 +266,7 @@ def _marcas():
     if agora - _MARCAS_CACHE["quando"] < 600 and _MARCAS_CACHE["quando"]:
         return _MARCAS_CACHE["dados"]
     dados = {}
+    ok_marcas = False
     try:
         r = requests.get(
             f"{SUPABASE_URL}/rest/v1/marcas_equivalentes",
@@ -270,6 +275,7 @@ def _marcas():
             timeout=10,
         )
         if r.ok:
+            ok_marcas = True
             for m in r.json():
                 dados[_sem_acento(m["marca"]).strip()] = (
                     _sem_acento(m["principio_ativo"]).strip(), bool(m.get("controlado"))
@@ -278,8 +284,9 @@ def _marcas():
             print(f"[CATALOGO] marcas_equivalentes: {r.status_code} {r.text[:120]}")
     except Exception as e:
         print("[CATALOGO] erro marcas:", e)
-    _MARCAS_CACHE["quando"] = agora
-    _MARCAS_CACHE["dados"] = dados
+    if ok_marcas:  # so guarda no cache se a consulta deu certo (senao tenta de novo na proxima)
+        _MARCAS_CACHE["quando"] = agora
+        _MARCAS_CACHE["dados"] = dados
     return dados
 
 
@@ -540,6 +547,16 @@ def contexto_catalogo(texto_atual, textos_anteriores=None):
             "\n\nCATALOGO REAL DA FARMACIA (consultado agora no estoque; use ISTO para esta mensagem "
             "do cliente, tem prioridade sobre a tabela fixa de precos):\n"
             + "\n".join(partes) + "\n" + REGRAS
+        )
+    except (CatalogoIndisponivel, requests.exceptions.RequestException) as e:
+        print("[CATALOGO] BANCO INDISPONIVEL:", e)
+        return (
+            "\n\nCATALOGO INDISPONIVEL - o sistema de consulta de estoque esta com instabilidade neste momento. "
+            "REGRAS ABSOLUTAS para esta resposta: (1) NAO diga que o produto nao existe, que nao temos ou que esta "
+            "em falta; (2) NAO informe preco nem estoque, e NAO use a tabela fixa de precos; (3) NAO responda "
+            "TRANSFERIR_ENCOMENDA nem TRANSFERIR_FARMACEUTICO por causa disso; (4) peca desculpas de forma simpatica, "
+            "explique que o sistema de consulta de estoque esta com uma instabilidade momentanea e peca para o "
+            "cliente tentar novamente em alguns minutos; (5) NAO feche nem confirme pedidos agora."
         )
     except Exception as e:
         print("[CATALOGO] erro:", e)
